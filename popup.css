@@ -1,20 +1,12 @@
 /* ==========================================================================
    Local Gmail Command Center - Modern Bento Stylesheet (CSS3 / ES2024+)
-   Zero-Dependency, Native Nesting, light-dark(), Flexbox & Grid
+   Zero-Dependency, Native Nesting, Flexbox & Grid
    ========================================================================== */
 
 :root {
   color-scheme: light dark;
 
-  /* Theme overrides via <meta name="color-scheme"> */
-  &:has(> head > meta[name="color-scheme"][content="dark"]) {
-    color-scheme: dark;
-  }
-  &:has(> head > meta[name="color-scheme"][content="light"]) {
-    color-scheme: light;
-  }
-
-  /* Adaptive Design Tokens */
+  /* Modern Native light-dark() Design Tokens */
   --bg-page: light-dark(#f8f9fa, #0c1017);
   --bg-surface: light-dark(#ffffff, #151b23);
   --bg-surface-hover: light-dark(#f3f4f6, #1f2631);
@@ -61,6 +53,85 @@
   --transition-normal: 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* System Dark Mode */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg-page: #0c1017;
+    --bg-surface: #151b23;
+    --bg-surface-hover: #1f2631;
+    --bg-surface-active: #28303e;
+    --bg-surface-elevated: #1b222c;
+
+    --border-color: #262c36;
+    --border-subtle: #1e242f;
+
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+
+    --accent-red-subtle: rgba(217, 48, 37, 0.16);
+    --accent-red-border: rgba(217, 48, 37, 0.35);
+
+    --accent-green-subtle: rgba(16, 185, 129, 0.16);
+    --accent-amber-subtle: rgba(245, 158, 11, 0.16);
+    --accent-purple-subtle: rgba(139, 92, 246, 0.16);
+    --accent-blue-subtle: rgba(37, 99, 235, 0.16);
+  }
+}
+
+/* Explicit User Dark Mode Override */
+[data-theme="dark"],
+:root[data-theme="dark"] {
+  color-scheme: dark !important;
+  --bg-page: #0c1017 !important;
+  --bg-surface: #151b23 !important;
+  --bg-surface-hover: #1f2631 !important;
+  --bg-surface-active: #28303e !important;
+  --bg-surface-elevated: #1b222c !important;
+
+  --border-color: #262c36 !important;
+  --border-subtle: #1e242f !important;
+
+  --text-primary: #f3f4f6 !important;
+  --text-secondary: #9ca3af !important;
+  --text-muted: #6b7280 !important;
+
+  --accent-red-subtle: rgba(217, 48, 37, 0.16) !important;
+  --accent-red-border: rgba(217, 48, 37, 0.35) !important;
+
+  --accent-green-subtle: rgba(16, 185, 129, 0.16) !important;
+  --accent-amber-subtle: rgba(245, 158, 11, 0.16) !important;
+  --accent-purple-subtle: rgba(139, 92, 246, 0.16) !important;
+  --accent-blue-subtle: rgba(37, 99, 235, 0.16) !important;
+}
+
+/* Explicit User Light Mode Override */
+[data-theme="light"],
+:root[data-theme="light"] {
+  color-scheme: light !important;
+  --bg-page: #f8f9fa !important;
+  --bg-surface: #ffffff !important;
+  --bg-surface-hover: #f3f4f6 !important;
+  --bg-surface-active: #e5e7eb !important;
+  --bg-surface-elevated: #ffffff !important;
+
+  --border-color: #e5e7eb !important;
+  --border-subtle: #f0f2f5 !important;
+
+  --text-primary: #111827 !important;
+  --text-secondary: #4b5563 !important;
+  --text-muted: #9ca3af !important;
+
+  --accent-red-subtle: #fee2e2 !important;
+  --accent-red-border: #fca5a5 !important;
+
+  --accent-green-subtle: #d1fae5 !important;
+  --accent-amber-subtle: #fef3c7 !important;
+  --accent-purple-subtle: #ede9fe !important;
+  --accent-blue-subtle: #dbeafe !important;
+}
+
 /* Base Reset & Layout */
 * {
   box-sizing: border-box;
@@ -82,16 +153,18 @@ body {
   overflow: hidden;
   user-select: none;
   -webkit-font-smoothing: antialiased;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
 }
 
 /* Full Width Fluid Layout for Side Panel */
 body[data-view="sidepanel"],
+body.is-sidepanel,
 @media (min-width: 420px) {
   body {
-    width: 100%;
-    min-height: 100vh;
-    max-height: none;
-    height: 100vh;
+    width: 100% !important;
+    min-height: 100vh !important;
+    max-height: none !important;
+    height: 100vh !important;
   }
 }
 
@@ -111,6 +184,7 @@ body[data-view="sidepanel"],
   background-color: var(--bg-surface);
   border-bottom: 1px solid var(--border-color);
   z-index: 10;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
 
   .brand {
     display: flex;
@@ -125,8 +199,14 @@ body[data-view="sidepanel"],
       width: 30px;
       height: 30px;
       border-radius: var(--radius-md);
-      background: linear-gradient(135deg, rgba(217, 48, 37, 0.15), rgba(217, 48, 37, 0.05));
-      border: 1px solid var(--accent-red-border);
+      background-color: var(--bg-page);
+      border: 1px solid var(--border-color);
+
+      .brand-img {
+        width: 20px;
+        height: 20px;
+        object-fit: contain;
+      }
 
       .brand-icon {
         width: 18px;
@@ -234,6 +314,7 @@ body[data-view="sidepanel"],
   background-color: var(--bg-surface);
   border-bottom: 1px solid var(--border-color);
   gap: 8px;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
 
   .tabs-scroll {
     display: flex;
@@ -329,6 +410,7 @@ body[data-view="sidepanel"],
   padding: 8px 12px;
   background-color: var(--bg-page);
   border-bottom: 1px solid var(--border-subtle);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
 
   .search-input-wrapper {
     position: relative;
@@ -516,7 +598,7 @@ body[data-view="sidepanel"],
     transform: translateY(-1px);
   }
 
-  /* Top Meta Line: Account, VIP Tag, Relative Time */
+  /* Top Meta Line */
   .card-top {
     display: flex;
     align-items: center;
@@ -567,7 +649,7 @@ body[data-view="sidepanel"],
       width: 24px;
       height: 24px;
       border-radius: 50%;
-      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      background: linear-gradient(135deg, #4285f4, #ea4335);
       color: #ffffff;
       font-size: 10.5px;
       font-weight: 700;
@@ -1029,9 +1111,9 @@ body[data-view="sidepanel"],
 
   .toast {
     padding: 6px 12px;
-    background-color: rgba(17, 24, 39, 0.92);
+    background-color: rgba(17, 24, 39, 0.94);
     color: #ffffff;
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     border-radius: var(--radius-full);
     box-shadow: var(--shadow-md);

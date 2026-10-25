@@ -3,8 +3,8 @@
  * Manifest V3, 2027-ready, Zero-Dependency.
  */
 
-// Embedded Base64 Data URL for Chrome Notifications (Ensures 100% reliable icons)
-const NOTIFICATION_ICON_DATA_URL = 'data:image/png;base64,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';
+// Embedded Base64 Data URL for Chrome Notifications (Official Gmail Icon)
+const NOTIFICATION_ICON_DATA_URL = 'data:image/png;base64,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';
 
 const ALARM_NAME = 'GMAIL_CHECK_ALARM';
 const DEFAULT_POLL_INTERVAL = 1; // 1 minute
@@ -69,6 +69,22 @@ async function ensureOffscreenDocument() {
   await creatingOffscreenPromise;
   creatingOffscreenPromise = null;
   return true;
+}
+
+/**
+ * Ensures side panel default path is enabled.
+ */
+async function initSidePanelOptions() {
+  if (chrome.sidePanel?.setOptions) {
+    try {
+      await chrome.sidePanel.setOptions({
+        path: 'sidepanel.html',
+        enabled: true
+      });
+    } catch (err) {
+      console.warn('Could not set side panel options:', err);
+    }
+  }
 }
 
 /**
@@ -327,12 +343,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // Extension Installation & Startup
 chrome.runtime.onInstalled.addListener(async (details) => {
+  await initSidePanelOptions();
   const settings = await getSettings();
   await setupAlarm(settings.pollInterval);
   await checkAllAccounts();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  await initSidePanelOptions();
   const settings = await getSettings();
   await setupAlarm(settings.pollInterval);
   await checkAllAccounts();
@@ -371,16 +389,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'OPEN_SIDE_PANEL') {
     (async () => {
       try {
-        const windowId = message.windowId || sender.tab?.windowId;
-        if (windowId) {
-          await chrome.sidePanel.open({ windowId });
-          sendResponse({ success: true });
-        } else {
-          const currentWindow = await chrome.windows.getCurrent();
-          await chrome.sidePanel.open({ windowId: currentWindow.id });
-          sendResponse({ success: true });
+        let windowId = message.windowId;
+        if (!windowId) {
+          const focusedWindow = await chrome.windows.getLastFocused({ populate: false });
+          windowId = focusedWindow?.id;
         }
+        if (!windowId) {
+          sendResponse({ success: false, error: 'No active window found' });
+          return;
+        }
+
+        await initSidePanelOptions();
+        await chrome.sidePanel.open({ windowId });
+        sendResponse({ success: true });
       } catch (err) {
+        console.error('Side panel open error in service worker:', err);
         sendResponse({ success: false, error: err.message });
       }
     })();

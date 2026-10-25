@@ -87,28 +87,25 @@ function formatRelativeTime(isoString) {
 /**
  * Theme & Color-Scheme Management
  */
-function initTheme() {
-  const metaColorScheme = document.querySelector('meta[name="color-scheme"]') || document.createElement('meta');
-  metaColorScheme.name = 'color-scheme';
-  if (!metaColorScheme.parentElement) document.head.appendChild(metaColorScheme);
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  document.documentElement.style.colorScheme = theme;
+  localStorage.setItem('local-gmail-theme', theme);
+  updateThemeIcons(theme);
+}
 
-  const savedTheme = localStorage.getItem('color-scheme') || 'light dark';
-  metaColorScheme.content = savedTheme;
-  updateThemeIcons(savedTheme);
+function initTheme() {
+  let savedTheme = localStorage.getItem('local-gmail-theme');
+  if (!savedTheme) {
+    savedTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  applyTheme(savedTheme);
 
   btnThemeToggleEl.addEventListener('click', () => {
-    const current = metaColorScheme.content;
-    let next = 'light';
-    if (current === 'light') {
-      next = 'dark';
-    } else if (current === 'dark') {
-      next = 'light dark';
-    } else {
-      next = 'dark';
-    }
-    metaColorScheme.content = next;
-    localStorage.setItem('color-scheme', next);
-    updateThemeIcons(next);
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const nextTheme = isDark ? 'light' : 'dark';
+    applyTheme(nextTheme);
+    showToast(nextTheme === 'dark' ? '🌙 მუქი თემა' : '☀️ ნათელი თემა');
   });
 }
 
@@ -116,13 +113,11 @@ function updateThemeIcons(theme) {
   if (theme === 'dark') {
     iconSunEl.classList.remove('hidden');
     iconMoonEl.classList.add('hidden');
-  } else if (theme === 'light') {
+    btnThemeToggleEl.title = 'თემა: მუქი (დააჭირეთ ნათელზე გადასართავად)';
+  } else {
     iconSunEl.classList.add('hidden');
     iconMoonEl.classList.remove('hidden');
-  } else {
-    // system
-    iconSunEl.classList.remove('hidden');
-    iconMoonEl.classList.add('hidden');
+    btnThemeToggleEl.title = 'თემა: ნათელი (დააჭირეთ მუქზე გადასართავად)';
   }
 }
 
@@ -131,20 +126,49 @@ function updateThemeIcons(theme) {
  */
 function initViewMode() {
   const urlParams = new URLSearchParams(window.location.search);
-  const isSidePanel = urlParams.get('view') === 'sidepanel' || window.innerWidth > 420;
+  const isSidePanel = bodyEl.dataset.view === 'sidepanel' || urlParams.get('view') === 'sidepanel' || window.innerWidth > 420;
 
   if (isSidePanel) {
     bodyEl.dataset.view = 'sidepanel';
-    btnSidePanelEl.title = 'Side Panel რეჟიმი აქტიურია';
-    btnSidePanelEl.style.opacity = '0.5';
-    btnSidePanelEl.disabled = true;
+    bodyEl.classList.add('is-sidepanel');
+    btnSidePanelEl.classList.add('hidden'); // Hide side panel button when already in side panel
   } else {
     btnSidePanelEl.addEventListener('click', async () => {
       try {
-        await chrome.runtime.sendMessage({ action: 'OPEN_SIDE_PANEL' });
-        window.close();
+        btnSidePanelEl.disabled = true;
+        const win = await chrome.windows.getLastFocused();
+        const winId = win?.id;
+
+        let opened = false;
+        // 1. Direct call if available in popup
+        if (chrome.sidePanel && typeof chrome.sidePanel.open === 'function' && winId) {
+          try {
+            await chrome.sidePanel.open({ windowId: winId });
+            opened = true;
+          } catch (err) {
+            console.warn('Direct popup sidePanel.open failed, trying background:', err);
+          }
+        }
+
+        // 2. Fallback via background Service Worker
+        if (!opened) {
+          const res = await chrome.runtime.sendMessage({
+            action: 'OPEN_SIDE_PANEL',
+            windowId: winId
+          });
+          if (!res?.success) {
+            throw new Error(res?.error || 'Could not open side panel');
+          }
+        }
+
+        showToast('📌 Side Panel იხსნება...');
+        setTimeout(() => {
+          window.close();
+        }, 200);
       } catch (err) {
-        console.warn('Could not open side panel:', err);
+        console.error('Failed to open side panel:', err);
+        showToast('Side Panel ვერ გაიხსნა: ' + err.message);
+        btnSidePanelEl.disabled = false;
       }
     });
   }
