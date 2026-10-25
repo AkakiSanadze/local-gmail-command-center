@@ -13,8 +13,10 @@ const MAX_NOTIFIED_IDS = 500;
 const DEFAULT_SETTINGS = {
   accounts: [
     { index: 0, name: 'Personal', enabled: true },
-    { index: 1, name: 'Work', enabled: false },
-    { index: 2, name: 'Secondary', enabled: false }
+    { index: 1, name: 'Work', enabled: true },
+    { index: 2, name: 'Account 3', enabled: true },
+    { index: 3, name: 'Account 4', enabled: true },
+    { index: 4, name: 'Account 5', enabled: true }
   ],
   pollInterval: DEFAULT_POLL_INTERVAL,
   soundEnabled: true,
@@ -219,28 +221,69 @@ async function fetchAccountFeed(accountIndex) {
  */
 async function checkAllAccounts() {
   const settings = await getSettings();
-  const enabledAccounts = settings.accounts.filter(a => a.enabled);
 
-  if (enabledAccounts.length === 0) {
-    await updateBadge(0, false, false);
-    return { totalUnread: 0, results: [] };
-  }
+  // Find any account explicitly disabled by the user
+  const userDisabledIndices = new Set(
+    (settings.accounts || []).filter(a => a.enabled === false && a.manuallyDisabled).map(a => a.index)
+  );
 
-  // Fetch all enabled accounts in parallel
-  const fetchPromises = enabledAccounts.map(acc => fetchAccountFeed(acc.index));
+  // Auto-scan all active browser Gmail sessions (slots u/0 through u/5)
+  const slotsToScan = [0, 1, 2, 3, 4, 5].filter(idx => !userDisabledIndices.has(idx));
+
+  // Fetch all slots in parallel
+  const fetchPromises = slotsToScan.map(idx => fetchAccountFeed(idx));
   const results = await Promise.all(fetchPromises);
 
   let totalUnread = 0;
-  let allUnauthorized = true;
+  let anyAuthorized = false;
+  let allEnabledUnauthorized = true;
   const newNotifiedIds = new Set(settings.notifiedIds || []);
   const brandNewEntries = [];
-
   const cachedFeeds = {};
+  const existingAccounts = settings.accounts || [];
+  const updatedAccounts = [];
 
   for (const res of results) {
     if (!res.unauthorized) {
-      allUnauthorized = false;
+      anyAuthorized = true;
+      allEnabledUnauthorized = false;
       totalUnread += res.fullcount;
+
+      let accConfig = existingAccounts.find(a => a.index === res.accountIndex);
+      const emailPrefix = res.accountEmail ? res.accountEmail.split('@')[0] : `Account ${res.accountIndex + 1}`;
+
+      if (!accConfig) {
+        accConfig = {
+          index: res.accountIndex,
+          name: emailPrefix,
+          email: res.accountEmail || '',
+          enabled: true
+        };
+      } else {
+        const hasCustomName = accConfig.name &&
+          !accConfig.name.startsWith('Account ') &&
+          accConfig.name !== 'Personal' &&
+          accConfig.name !== 'Work' &&
+          accConfig.name !== 'Secondary';
+
+        accConfig = {
+          ...accConfig,
+          email: res.accountEmail || accConfig.email || '',
+          name: hasCustomName ? accConfig.name : emailPrefix,
+          enabled: true
+        };
+      }
+      updatedAccounts.push(accConfig);
+
+      // Collect new unread entries from authenticated feeds
+      if (Array.isArray(res.entries)) {
+        for (const entry of res.entries) {
+          if (!newNotifiedIds.has(entry.id)) {
+            brandNewEntries.push(entry);
+            newNotifiedIds.add(entry.id);
+          }
+        }
+      }
     }
 
     cachedFeeds[res.accountIndex] = {
@@ -251,18 +294,23 @@ async function checkAllAccounts() {
       lastUpdated: new Date().toISOString(),
       error: res.error
     };
+  }
 
-    // Collect new entries not seen before
-    for (const entry of res.entries) {
-      if (!newNotifiedIds.has(entry.id)) {
-        brandNewEntries.push(entry);
-        newNotifiedIds.add(entry.id);
-      }
+  // Preserve manually disabled accounts in storage so the user can re-enable them in settings
+  for (const acc of existingAccounts) {
+    if (acc.manuallyDisabled && !updatedAccounts.some(u => u.index === acc.index)) {
+      updatedAccounts.push(acc);
     }
   }
 
+  if (updatedAccounts.length === 0) {
+    updatedAccounts.push({ index: 0, name: 'Personal', enabled: true });
+  }
+
+  updatedAccounts.sort((a, b) => a.index - b.index);
+
   // Update Badge
-  await updateBadge(totalUnread, allUnauthorized, true);
+  await updateBadge(totalUnread, allEnabledUnauthorized, anyAuthorized);
 
   // Trigger sound & notifications for new unread emails
   let shouldPlaySound = false;
@@ -312,14 +360,19 @@ async function checkAllAccounts() {
   // Prune notifiedIds to prevent unbounded storage growth (keep latest MAX_NOTIFIED_IDS)
   const trimmedNotifiedIds = Array.from(newNotifiedIds).slice(-MAX_NOTIFIED_IDS);
 
-  // Save cache and notifiedIds
-  await chrome.storage.local.set({
+  // Save cache, notifiedIds, and any auto-discovered account details
+  const storageUpdate = {
     cachedFeeds,
     notifiedIds: trimmedNotifiedIds,
     lastGlobalCheck: new Date().toISOString()
-  });
+  };
+  const accountsChanged = JSON.stringify(updatedAccounts) !== JSON.stringify(existingAccounts);
+  if (accountsChanged) {
+    storageUpdate.accounts = updatedAccounts;
+  }
+  await chrome.storage.local.set(storageUpdate);
 
-  return { totalUnread, allUnauthorized, results };
+  return { totalUnread, allEnabledUnauthorized, results };
 }
 
 /**

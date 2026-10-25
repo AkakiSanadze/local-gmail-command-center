@@ -124,54 +124,70 @@ function updateThemeIcons(theme) {
 /**
  * Dual View Setup (Popup vs Side Panel)
  */
-function initViewMode() {
+function updateViewportLayout() {
   const urlParams = new URLSearchParams(window.location.search);
-  const isSidePanel = bodyEl.dataset.view === 'sidepanel' || urlParams.get('view') === 'sidepanel' || window.innerWidth > 420;
+  const isSidePanel =
+    document.body.dataset.view === 'sidepanel' ||
+    document.body.classList.contains('is-sidepanel') ||
+    window.location.pathname.includes('sidepanel') ||
+    urlParams.get('view') === 'sidepanel' ||
+    window.innerWidth > 390;
 
   if (isSidePanel) {
-    bodyEl.dataset.view = 'sidepanel';
-    bodyEl.classList.add('is-sidepanel');
-    btnSidePanelEl.classList.add('hidden'); // Hide side panel button when already in side panel
+    document.documentElement.dataset.view = 'sidepanel';
+    document.body.dataset.view = 'sidepanel';
+    document.body.classList.add('is-sidepanel');
+    btnSidePanelEl.classList.add('hidden');
   } else {
-    btnSidePanelEl.addEventListener('click', async () => {
-      try {
-        btnSidePanelEl.disabled = true;
-        const win = await chrome.windows.getLastFocused();
-        const winId = win?.id;
-
-        let opened = false;
-        // 1. Direct call if available in popup
-        if (chrome.sidePanel && typeof chrome.sidePanel.open === 'function' && winId) {
-          try {
-            await chrome.sidePanel.open({ windowId: winId });
-            opened = true;
-          } catch (err) {
-            console.warn('Direct popup sidePanel.open failed, trying background:', err);
-          }
-        }
-
-        // 2. Fallback via background Service Worker
-        if (!opened) {
-          const res = await chrome.runtime.sendMessage({
-            action: 'OPEN_SIDE_PANEL',
-            windowId: winId
-          });
-          if (!res?.success) {
-            throw new Error(res?.error || 'Could not open side panel');
-          }
-        }
-
-        showToast('📌 Side Panel იხსნება...');
-        setTimeout(() => {
-          window.close();
-        }, 200);
-      } catch (err) {
-        console.error('Failed to open side panel:', err);
-        showToast('Side Panel ვერ გაიხსნა: ' + err.message);
-        btnSidePanelEl.disabled = false;
-      }
-    });
+    document.documentElement.dataset.view = 'popup';
+    document.body.dataset.view = 'popup';
+    document.body.classList.remove('is-sidepanel');
+    btnSidePanelEl.classList.remove('hidden');
   }
+}
+
+function initViewMode() {
+  updateViewportLayout();
+  window.addEventListener('resize', updateViewportLayout);
+
+  btnSidePanelEl.addEventListener('click', async () => {
+    try {
+      btnSidePanelEl.disabled = true;
+      const win = await chrome.windows.getLastFocused();
+      const winId = win?.id;
+
+      let opened = false;
+      // 1. Direct call if available in popup
+      if (chrome.sidePanel && typeof chrome.sidePanel.open === 'function' && winId) {
+        try {
+          await chrome.sidePanel.open({ windowId: winId });
+          opened = true;
+        } catch (err) {
+          console.warn('Direct popup sidePanel.open failed, trying background:', err);
+        }
+      }
+
+      // 2. Fallback via background Service Worker
+      if (!opened) {
+        const res = await chrome.runtime.sendMessage({
+          action: 'OPEN_SIDE_PANEL',
+          windowId: winId
+        });
+        if (!res?.success) {
+          throw new Error(res?.error || 'Could not open side panel');
+        }
+      }
+
+      showToast('📌 Side Panel იხსნება...');
+      setTimeout(() => {
+        window.close();
+      }, 200);
+    } catch (err) {
+      console.error('Failed to open side panel:', err);
+      showToast('Side Panel ვერ გაიხსნა: ' + err.message);
+      btnSidePanelEl.disabled = false;
+    }
+  });
 }
 
 /**
@@ -181,8 +197,10 @@ async function loadState() {
   const data = await chrome.storage.local.get({
     accounts: [
       { index: 0, name: 'Personal', enabled: true },
-      { index: 1, name: 'Work', enabled: false },
-      { index: 2, name: 'Secondary', enabled: false }
+      { index: 1, name: 'Work', enabled: true },
+      { index: 2, name: 'Account 3', enabled: true },
+      { index: 3, name: 'Account 4', enabled: true },
+      { index: 4, name: 'Account 5', enabled: true }
     ],
     pollInterval: 1,
     soundEnabled: true,
@@ -239,24 +257,33 @@ function updateLastSyncTimeUI(isoString) {
  */
 function processCachedEmails() {
   allEmails = [];
-  const enabledAccounts = appSettings.accounts.filter(a => a.enabled);
-  let hasUnauthorizedAccount = false;
-  let unauthorizedMsg = [];
+  const accounts = appSettings.accounts || [];
+  let anyAuthorizedAccount = false;
 
-  for (const acc of enabledAccounts) {
-    const feed = cachedFeedData[acc.index];
+  // Scan all feeds in cachedFeedData
+  const feedIndices = Object.keys(cachedFeedData).map(Number).sort((a, b) => a - b);
+
+  for (const idx of feedIndices) {
+    const feed = cachedFeedData[idx];
     if (!feed) continue;
 
-    if (feed.unauthorized) {
-      hasUnauthorizedAccount = true;
-      unauthorizedMsg.push(`u/${acc.index} (${acc.name})`);
-    } else if (Array.isArray(feed.entries)) {
-      for (const entry of feed.entries) {
-        allEmails.push({
-          ...entry,
-          accountIndex: acc.index,
-          accountName: acc.name
-        });
+    const accConfig = accounts.find(a => a.index === idx);
+    // If user explicitly disabled this account in settings, skip
+    if (accConfig && accConfig.enabled === false && accConfig.manuallyDisabled) {
+      continue;
+    }
+
+    if (!feed.unauthorized) {
+      anyAuthorizedAccount = true;
+      if (Array.isArray(feed.entries)) {
+        for (const entry of feed.entries) {
+          allEmails.push({
+            ...entry,
+            accountIndex: idx,
+            accountName: accConfig?.name || (feed.accountEmail ? feed.accountEmail.split('@')[0] : `u/${idx}`),
+            accountEmail: feed.accountEmail || accConfig?.email || ''
+          });
+        }
       }
     }
   }
@@ -264,9 +291,9 @@ function processCachedEmails() {
   // Sort unified emails by issued date descending
   allEmails.sort((a, b) => new Date(b.issued || 0) - new Date(a.issued || 0));
 
-  // Handle Auth Banner
-  if (hasUnauthorizedAccount) {
-    authAccountMsgEl.textContent = `გაიარეთ ავტორიზაცია Gmail-ში: ${unauthorizedMsg.join(', ')}`;
+  // Only show Auth Warning Banner if NO account is logged in
+  if (!anyAuthorizedAccount && feedIndices.length > 0) {
+    authAccountMsgEl.textContent = 'არცერთ ექაუნთში არ ხართ შესული. გთხოვთ გაიაროთ ავტორიზაცია Gmail-ში.';
     authBannerEl.classList.remove('hidden');
   } else {
     authBannerEl.classList.add('hidden');
@@ -279,7 +306,16 @@ function processCachedEmails() {
 function renderAccountTabs() {
   accountTabsEl.innerHTML = '';
 
-  const enabledAccounts = appSettings.accounts.filter(a => a.enabled);
+  const accounts = appSettings.accounts || [];
+
+  // Determine which accounts to display in tabs: all actively authorized feeds
+  const activeFeedIndices = Object.keys(cachedFeedData)
+    .map(Number)
+    .filter(idx => cachedFeedData[idx] && !cachedFeedData[idx].unauthorized)
+    .sort((a, b) => a - b);
+
+  // If no feeds cached yet, show at least index 0
+  const indicesToShow = activeFeedIndices.length > 0 ? activeFeedIndices : [0];
 
   // 'All' Tab
   const allCount = allEmails.length;
@@ -297,21 +333,28 @@ function renderAccountTabs() {
   });
   accountTabsEl.appendChild(allTabBtn);
 
-  // Individual Account Tabs
-  for (const acc of enabledAccounts) {
-    const feed = cachedFeedData[acc.index];
-    const count = feed && !feed.unauthorized ? (feed.fullcount || 0) : 0;
-    const isUnauth = feed && feed.unauthorized;
+  // Individual Account Tabs for EVERY logged-in account
+  for (const idx of indicesToShow) {
+    const accConfig = accounts.find(a => a.index === idx);
+    if (accConfig && accConfig.enabled === false && accConfig.manuallyDisabled) {
+      continue;
+    }
+
+    const feed = cachedFeedData[idx];
+    const count = feed ? (feed.fullcount || 0) : 0;
+    const emailStr = feed?.accountEmail || accConfig?.email || '';
+    const displayName = accConfig?.name || (emailStr ? emailStr.split('@')[0] : `u/${idx}`);
 
     const tabBtn = document.createElement('button');
     tabBtn.type = 'button';
-    tabBtn.className = `tab-pill ${currentTab === String(acc.index) ? 'active' : ''}`;
+    tabBtn.className = `tab-pill ${currentTab === String(idx) ? 'active' : ''}`;
+    tabBtn.title = emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`;
     tabBtn.innerHTML = `
-      <span>u/${acc.index} ${escapeHtml(acc.name)}</span>
-      <span class="tab-badge ${count > 0 ? 'has-unread' : ''}">${isUnauth ? '?' : count}</span>
+      <span>u/${idx} ${escapeHtml(displayName)}</span>
+      <span class="tab-badge ${count > 0 ? 'has-unread' : ''}">${count}</span>
     `;
     tabBtn.addEventListener('click', () => {
-      currentTab = String(acc.index);
+      currentTab = String(idx);
       renderAccountTabs();
       renderEmailList();
     });
@@ -636,14 +679,18 @@ function initSettingsModal() {
 
     const accounts = [];
     const rows = accountsSettingsListEl.querySelectorAll('.account-setting-row');
+    const existingAccounts = appSettings.accounts || [];
     rows.forEach(row => {
       const idx = Number(row.dataset.index);
       const enabledCheckbox = row.querySelector('.account-enabled-checkbox');
       const nameInput = row.querySelector('.account-setting-input');
+      const existing = existingAccounts.find(a => a.index === idx) || {};
       accounts.push({
+        ...existing,
         index: idx,
-        name: nameInput.value.trim() || `Account ${idx}`,
-        enabled: enabledCheckbox.checked
+        name: nameInput.value.trim() || existing.name || `Account ${idx + 1}`,
+        enabled: enabledCheckbox.checked,
+        manuallyDisabled: !enabledCheckbox.checked
       });
     });
 
@@ -695,23 +742,37 @@ function populateSettingsForm() {
   accountsSettingsListEl.innerHTML = '';
   const currentAccounts = appSettings.accounts || [];
 
-  for (let i = 0; i < 3; i++) {
-    const existing = currentAccounts.find(a => a.index === i) || {
-      index: i,
-      name: i === 0 ? 'Personal' : (i === 1 ? 'Work' : 'Secondary'),
-      enabled: i === 0
+  // Gather indices from currentAccounts, cachedFeedData, minimum slots 0..3 (or up to detected maximum)
+  const indicesSet = new Set([0, 1, 2, 3]);
+  currentAccounts.forEach(a => indicesSet.add(a.index));
+  Object.keys(cachedFeedData).forEach(k => indicesSet.add(Number(k)));
+  const sortedIndices = Array.from(indicesSet).sort((a, b) => a - b);
+
+  for (const idx of sortedIndices) {
+    const feed = cachedFeedData[idx];
+    const existing = currentAccounts.find(a => a.index === idx) || {
+      index: idx,
+      name: feed?.accountEmail ? feed.accountEmail.split('@')[0] : `Account ${idx + 1}`,
+      email: feed?.accountEmail || '',
+      enabled: !feed?.unauthorized
     };
+
+    const emailDisplay = feed?.accountEmail || existing.email || '';
+    const statusNote = feed?.unauthorized ? '<span class="acc-unauth" style="font-size:10px; color:var(--text-muted);">(გამორთული)</span>' : '';
 
     const row = document.createElement('div');
     row.className = 'account-setting-row';
-    row.dataset.index = String(i);
+    row.dataset.index = String(idx);
     row.innerHTML = `
       <label class="switch" title="ჩართვა/გამორთვა">
         <input type="checkbox" class="account-enabled-checkbox" ${existing.enabled ? 'checked' : ''}>
         <span class="slider"></span>
       </label>
-      <span class="account-setting-title">u/${i}</span>
-      <input type="text" class="account-setting-input" value="${escapeHtml(existing.name)}" placeholder="სახელი (მაგ: Work)">
+      <div style="display:flex; flex-direction:column; min-width:54px;">
+        <span class="account-setting-title">u/${idx}</span>
+        ${statusNote}
+      </div>
+      <input type="text" class="account-setting-input" value="${escapeHtml(existing.name)}" placeholder="${escapeHtml(emailDisplay || `Account ${idx + 1}`)}" title="${escapeHtml(emailDisplay)}">
     `;
     accountsSettingsListEl.appendChild(row);
   }

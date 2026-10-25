@@ -139,10 +139,14 @@
   padding: 0;
 }
 
+html {
+  width: 100%;
+  height: 100%;
+}
+
 body {
-  width: 380px;
-  min-height: 540px;
-  max-height: 600px;
+  width: 100%;
+  min-height: 100%;
   background-color: var(--bg-page);
   color: var(--text-primary);
   font-family: var(--font-family);
@@ -156,15 +160,32 @@ body {
   transition: background-color var(--transition-fast), color var(--transition-fast);
 }
 
-/* Full Width Fluid Layout for Side Panel */
+/* Fixed dimensions ONLY for toolbar popup */
+body[data-view="popup"] {
+  width: 380px;
+  min-height: 540px;
+  max-height: 600px;
+}
+
+/* 100% Fluid Dynamic Width for Side Panel */
 body[data-view="sidepanel"],
-body.is-sidepanel,
-@media (min-width: 420px) {
+body.is-sidepanel {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 100% !important;
+  min-height: 100vh !important;
+  height: 100vh !important;
+  max-height: none !important;
+}
+
+/* Media Query for dynamic responsive expansion */
+@media (min-width: 395px) {
   body {
     width: 100% !important;
-    min-height: 100vh !important;
-    max-height: none !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
     height: 100vh !important;
+    max-height: none !important;
   }
 }
 
