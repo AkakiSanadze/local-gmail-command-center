@@ -38,6 +38,7 @@ const settingsDialogEl = document.getElementById('settingsDialog');
 const btnCloseSettingsEl = document.getElementById('btnCloseSettings');
 const settingsFormEl = document.getElementById('settingsForm');
 const accountsSettingsListEl = document.getElementById('accountsSettingsList');
+const btnAddAccountRowEl = document.getElementById('btnAddAccountRow');
 const pollIntervalInputEl = document.getElementById('pollIntervalInput');
 const focusModeToggleEl = document.getElementById('focusModeToggle');
 const vipOnlyToggleEl = document.getElementById('vipOnlyToggle');
@@ -307,15 +308,21 @@ function renderAccountTabs() {
   accountTabsEl.innerHTML = '';
 
   const accounts = appSettings.accounts || [];
+  const enabledAccounts = accounts.filter(a => a.enabled !== false && !a.manuallyDisabled);
 
-  // Determine which accounts to display in tabs: all actively authorized feeds
-  const activeFeedIndices = Object.keys(cachedFeedData)
-    .map(Number)
-    .filter(idx => cachedFeedData[idx] && !cachedFeedData[idx].unauthorized)
-    .sort((a, b) => a - b);
+  // Gather all accounts to display: enabled in settings + active in cache
+  const indicesSet = new Set();
+  enabledAccounts.forEach(a => indicesSet.add(a.index));
+  Object.keys(cachedFeedData).forEach(k => {
+    const idx = Number(k);
+    const feed = cachedFeedData[idx];
+    if (feed && !feed.unauthorized) {
+      indicesSet.add(idx);
+    }
+  });
 
-  // If no feeds cached yet, show at least index 0
-  const indicesToShow = activeFeedIndices.length > 0 ? activeFeedIndices : [0];
+  const indicesToShow = Array.from(indicesSet).sort((a, b) => a - b);
+  if (indicesToShow.length === 0) indicesToShow.push(0);
 
   // 'All' Tab
   const allCount = allEmails.length;
@@ -333,25 +340,24 @@ function renderAccountTabs() {
   });
   accountTabsEl.appendChild(allTabBtn);
 
-  // Individual Account Tabs for EVERY logged-in account
+  // Individual Account Tabs
   for (const idx of indicesToShow) {
     const accConfig = accounts.find(a => a.index === idx);
-    if (accConfig && accConfig.enabled === false && accConfig.manuallyDisabled) {
-      continue;
-    }
-
     const feed = cachedFeedData[idx];
-    const count = feed ? (feed.fullcount || 0) : 0;
-    const emailStr = feed?.accountEmail || accConfig?.email || '';
+    const isUnauthorized = feed ? feed.unauthorized : false;
+    const count = feed && !isUnauthorized ? (feed.fullcount || 0) : 0;
+    const emailStr = accConfig?.email || feed?.accountEmail || '';
     const displayName = accConfig?.name || (emailStr ? emailStr.split('@')[0] : `u/${idx}`);
 
     const tabBtn = document.createElement('button');
     tabBtn.type = 'button';
-    tabBtn.className = `tab-pill ${currentTab === String(idx) ? 'active' : ''}`;
-    tabBtn.title = emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`;
+    tabBtn.className = `tab-pill ${currentTab === String(idx) ? 'active' : ''} ${isUnauthorized ? 'tab-unauth' : ''}`;
+    tabBtn.title = isUnauthorized
+      ? `${emailStr || displayName} (საჭიროა Gmail-ის გახსნა)`
+      : `${emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`}`;
     tabBtn.innerHTML = `
       <span>u/${idx} ${escapeHtml(displayName)}</span>
-      <span class="tab-badge ${count > 0 ? 'has-unread' : ''}">${count}</span>
+      <span class="tab-badge ${isUnauthorized ? 'is-warning' : (count > 0 ? 'has-unread' : '')}">${isUnauthorized ? '🔑' : count}</span>
     `;
     tabBtn.addEventListener('click', () => {
       currentTab = String(idx);
@@ -367,6 +373,34 @@ function renderAccountTabs() {
  */
 function renderEmailList() {
   emailListEl.innerHTML = '';
+
+  // If viewing a specific account tab that is unauthorized, show helpful session activation card
+  if (currentTab !== 'all') {
+    const targetIdx = Number(currentTab);
+    const feed = cachedFeedData[targetIdx];
+    const accConfig = (appSettings.accounts || []).find(a => a.index === targetIdx);
+    const emailOrName = accConfig?.email || accConfig?.name || `Account u/${targetIdx}`;
+    const loginTarget = accConfig?.email || targetIdx;
+    const loginUrl = `https://mail.google.com/mail/u/${encodeURIComponent(loginTarget)}/#inbox`;
+
+    if (feed && feed.unauthorized) {
+      const authCard = document.createElement('div');
+      authCard.className = 'empty-state auth-needed-card';
+      authCard.innerHTML = `
+        <div style="font-size:38px; line-height:1; margin-bottom:4px;">🔑</div>
+        <div class="empty-title">საჭიროა Gmail-ის სესიის გააქტიურება</div>
+        <div class="empty-subtitle"><strong>${escapeHtml(emailOrName)}</strong>-ის სესია არ არის აქტიური Gmail-ში. გახსენით ბრაუზერში ერთხელ სესიის გასააქტიურებლად:</div>
+        <button type="button" class="btn-primary" style="margin-top:12px; width:auto; padding:8px 16px; cursor:pointer;" id="btnActivateTabSession">
+          Gmail-ში შესვლა / სესიის გახსნა
+        </button>
+      `;
+      authCard.querySelector('#btnActivateTabSession').addEventListener('click', () => {
+        chrome.tabs.create({ url: loginUrl });
+      });
+      emailListEl.appendChild(authCard);
+      return;
+    }
+  }
 
   let filtered = allEmails;
 
@@ -685,10 +719,15 @@ function initSettingsModal() {
       const enabledCheckbox = row.querySelector('.account-enabled-checkbox');
       const nameInput = row.querySelector('.account-setting-input');
       const existing = existingAccounts.find(a => a.index === idx) || {};
+
+      const inputVal = nameInput.value.trim();
+      const isEmail = inputVal.includes('@');
+
       accounts.push({
         ...existing,
         index: idx,
-        name: nameInput.value.trim() || existing.name || `Account ${idx + 1}`,
+        email: isEmail ? inputVal : (existing.email || ''),
+        name: isEmail ? inputVal.split('@')[0] : (inputVal || existing.name || `Account ${idx + 1}`),
         enabled: enabledCheckbox.checked,
         manuallyDisabled: !enabledCheckbox.checked
       });
@@ -721,6 +760,28 @@ function initSettingsModal() {
     triggerRefresh();
   });
 
+  // Add Account Row Button inside Settings
+  if (btnAddAccountRowEl) {
+    btnAddAccountRowEl.addEventListener('click', () => {
+      const rows = accountsSettingsListEl.querySelectorAll('.account-setting-row');
+      let maxIdx = -1;
+      rows.forEach(r => {
+        const i = Number(r.dataset.index);
+        if (i > maxIdx) maxIdx = i;
+      });
+      const nextIdx = maxIdx + 1;
+      const row = createAccountSettingRow({
+        index: nextIdx,
+        name: `Account ${nextIdx + 1}`,
+        email: '',
+        enabled: true
+      });
+      accountsSettingsListEl.appendChild(row);
+      const input = row.querySelector('.account-setting-input');
+      input.focus();
+    });
+  }
+
   // Test Sound Button inside Settings
   btnTestSoundEl.addEventListener('click', async () => {
     btnTestSoundEl.disabled = true;
@@ -735,17 +796,71 @@ function initSettingsModal() {
   });
 }
 
+function createAccountSettingRow(acc) {
+  const idx = acc.index;
+  const feed = cachedFeedData[idx];
+  const isEnabled = acc.enabled !== false;
+  const emailDisplay = acc.email || feed?.accountEmail || '';
+  const isUnauth = feed ? feed.unauthorized : false;
+  const targetLogin = emailDisplay || idx;
+  const loginUrl = `https://mail.google.com/mail/u/${encodeURIComponent(targetLogin)}/#inbox`;
+
+  const statusBadge = isUnauth
+    ? `<a href="${loginUrl}" target="_blank" class="badge-status-auth" title="დააჭირეთ Gmail-ში გასახსნელად">🔑 შესვლა</a>`
+    : (feed && !feed.unauthorized ? `<span class="badge-status-ok" title="სინქრონიზებულია">✓ აქტიური</span>` : '');
+
+  const row = document.createElement('div');
+  row.className = 'account-setting-row';
+  row.dataset.index = String(idx);
+  row.innerHTML = `
+    <label class="switch" title="ჩართვა/გამორთვა">
+      <input type="checkbox" class="account-enabled-checkbox" ${isEnabled ? 'checked' : ''}>
+      <span class="slider"></span>
+    </label>
+    <div style="display:flex; flex-direction:column; min-width:54px;">
+      <span class="account-setting-title">u/${idx}</span>
+      ${statusBadge}
+    </div>
+    <input type="text" class="account-setting-input" value="${escapeHtml(acc.email || acc.name || '')}" placeholder="ელფოსტა ან სახელი (მაგ: user@gmail.com)" title="შეიყვანეთ ელფოსტა ან სახელი">
+  `;
+
+  // Auto-enable checkbox if user types into input
+  const inputEl = row.querySelector('.account-setting-input');
+  const chkEl = row.querySelector('.account-enabled-checkbox');
+  inputEl.addEventListener('input', () => {
+    if (inputEl.value.trim().length > 0) {
+      chkEl.checked = true;
+    }
+  });
+
+  return row;
+}
+
 function populateSettingsForm() {
   if (!appSettings) return;
 
-  // Accounts List
   accountsSettingsListEl.innerHTML = '';
   const currentAccounts = appSettings.accounts || [];
 
-  // Gather indices from currentAccounts, cachedFeedData, minimum slots 0..3 (or up to detected maximum)
+  // Filter out duplicate redirect slots (where non-zero slot has same email as slot 0)
+  const slot0Feed = cachedFeedData[0];
+  const slot0Email = slot0Feed && !slot0Feed.unauthorized ? slot0Feed.accountEmail : null;
+
+  // Build clean list of accounts:
+  // 1. Any account in currentAccounts
+  // 2. Default slots 0..3 (min 4 accounts for multi-account)
   const indicesSet = new Set([0, 1, 2, 3]);
   currentAccounts.forEach(a => indicesSet.add(a.index));
-  Object.keys(cachedFeedData).forEach(k => indicesSet.add(Number(k)));
+
+  // Only add feeds from cachedFeedData if they are not phantom duplicates
+  Object.keys(cachedFeedData).forEach(k => {
+    const idx = Number(k);
+    const feed = cachedFeedData[idx];
+    if (feed && !feed.unauthorized && feed.accountEmail && (feed.accountEmail !== slot0Email || idx === 0)) {
+      indicesSet.add(idx);
+    }
+  });
+
   const sortedIndices = Array.from(indicesSet).sort((a, b) => a - b);
 
   for (const idx of sortedIndices) {
@@ -754,26 +869,10 @@ function populateSettingsForm() {
       index: idx,
       name: feed?.accountEmail ? feed.accountEmail.split('@')[0] : `Account ${idx + 1}`,
       email: feed?.accountEmail || '',
-      enabled: !feed?.unauthorized
+      enabled: true
     };
 
-    const emailDisplay = feed?.accountEmail || existing.email || '';
-    const statusNote = feed?.unauthorized ? '<span class="acc-unauth" style="font-size:10px; color:var(--text-muted);">(გამორთული)</span>' : '';
-
-    const row = document.createElement('div');
-    row.className = 'account-setting-row';
-    row.dataset.index = String(idx);
-    row.innerHTML = `
-      <label class="switch" title="ჩართვა/გამორთვა">
-        <input type="checkbox" class="account-enabled-checkbox" ${existing.enabled ? 'checked' : ''}>
-        <span class="slider"></span>
-      </label>
-      <div style="display:flex; flex-direction:column; min-width:54px;">
-        <span class="account-setting-title">u/${idx}</span>
-        ${statusNote}
-      </div>
-      <input type="text" class="account-setting-input" value="${escapeHtml(existing.name)}" placeholder="${escapeHtml(emailDisplay || `Account ${idx + 1}`)}" title="${escapeHtml(emailDisplay)}">
-    `;
+    const row = createAccountSettingRow(existing);
     accountsSettingsListEl.appendChild(row);
   }
 

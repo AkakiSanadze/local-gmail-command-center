@@ -15,8 +15,7 @@ const DEFAULT_SETTINGS = {
     { index: 0, name: 'Personal', enabled: true },
     { index: 1, name: 'Work', enabled: true },
     { index: 2, name: 'Account 3', enabled: true },
-    { index: 3, name: 'Account 4', enabled: true },
-    { index: 4, name: 'Account 5', enabled: true }
+    { index: 3, name: 'Account 4', enabled: true }
   ],
   pollInterval: DEFAULT_POLL_INTERVAL,
   soundEnabled: true,
@@ -145,75 +144,75 @@ function isVipEmail(entry, keywordsString) {
 
 /**
  * Fetches and parses a single Gmail account Atom feed.
+ * Tries direct account index, user email, and authuser variations.
  */
-async function fetchAccountFeed(accountIndex) {
-  const url = `https://mail.google.com/mail/u/${accountIndex}/feed/atom`;
-  try {
-    const res = await fetch(url, {
-      credentials: 'include',
-      cache: 'no-store'
-    });
+async function fetchAccountFeed(accOrIndex) {
+  const accountIndex = typeof accOrIndex === 'object' ? accOrIndex.index : Number(accOrIndex);
+  const email = (typeof accOrIndex === 'object' && accOrIndex.email) ? accOrIndex.email.trim() : '';
 
-    if (res.status === 401 || res.status === 403 || res.redirected && res.url.includes('ServiceLogin')) {
-      return {
-        accountIndex,
-        unauthorized: true,
-        fullcount: 0,
-        accountEmail: '',
-        entries: [],
-        error: 'Unauthorized'
-      };
-    }
-
-    if (!res.ok) {
-      return {
-        accountIndex,
-        unauthorized: false,
-        fullcount: 0,
-        accountEmail: '',
-        entries: [],
-        error: `HTTP ${res.status}`
-      };
-    }
-
-    const xmlText = await res.text();
-    await ensureOffscreenDocument();
-
-    const parseResponse = await chrome.runtime.sendMessage({
-      action: 'PARSE_GMAIL_ATOM',
-      xmlText,
-      accountIndex
-    });
-
-    if (!parseResponse || !parseResponse.success) {
-      return {
-        accountIndex,
-        unauthorized: false,
-        fullcount: 0,
-        accountEmail: '',
-        entries: [],
-        error: parseResponse?.error || 'Parse failure'
-      };
-    }
-
-    return {
-      accountIndex,
-      unauthorized: false,
-      fullcount: parseResponse.fullcount || 0,
-      accountEmail: parseResponse.accountEmail || '',
-      entries: parseResponse.entries || [],
-      error: null
-    };
-  } catch (err) {
-    return {
-      accountIndex,
-      unauthorized: false,
-      fullcount: 0,
-      accountEmail: '',
-      entries: [],
-      error: err.message
-    };
+  const urlsToTry = [];
+  if (email && email.includes('@')) {
+    urlsToTry.push(`https://mail.google.com/mail/feed/atom?authuser=${encodeURIComponent(email)}`);
+    urlsToTry.push(`https://mail.google.com/mail/u/${encodeURIComponent(email)}/feed/atom`);
   }
+  urlsToTry.push(`https://mail.google.com/mail/u/${accountIndex}/feed/atom`);
+  urlsToTry.push(`https://mail.google.com/mail/feed/atom?authuser=${accountIndex}`);
+
+  let lastError = 'Unauthorized';
+
+  for (const url of urlsToTry) {
+    try {
+      const res = await fetch(url, {
+        credentials: 'include',
+        cache: 'no-store'
+      });
+
+      if (res.status === 401 || res.status === 403 || (res.redirected && res.url.includes('ServiceLogin'))) {
+        continue;
+      }
+
+      if (!res.ok) {
+        lastError = `HTTP ${res.status}`;
+        continue;
+      }
+
+      const xmlText = await res.text();
+      // Ensure response is actually an XML Atom feed and not an HTML redirect
+      if (!xmlText.includes('<feed') && !xmlText.includes('<fullcount>')) {
+        continue;
+      }
+
+      await ensureOffscreenDocument();
+
+      const parseResponse = await chrome.runtime.sendMessage({
+        action: 'PARSE_GMAIL_ATOM',
+        xmlText,
+        accountIndex
+      });
+
+      if (parseResponse && parseResponse.success) {
+        return {
+          accountIndex,
+          unauthorized: false,
+          fullcount: parseResponse.fullcount || 0,
+          accountEmail: parseResponse.accountEmail || email,
+          entries: parseResponse.entries || [],
+          error: null
+        };
+      }
+    } catch (err) {
+      lastError = err.message;
+    }
+  }
+
+  return {
+    accountIndex,
+    unauthorized: true,
+    fullcount: 0,
+    accountEmail: email,
+    entries: [],
+    error: lastError
+  };
 }
 
 /**
@@ -221,18 +220,35 @@ async function fetchAccountFeed(accountIndex) {
  */
 async function checkAllAccounts() {
   const settings = await getSettings();
+  const existingAccounts = settings.accounts || [];
 
-  // Find any account explicitly disabled by the user
-  const userDisabledIndices = new Set(
-    (settings.accounts || []).filter(a => a.enabled === false && a.manuallyDisabled).map(a => a.index)
-  );
+  // Collect accounts to scan:
+  // 1. Any account already defined in settings.accounts that is not manually disabled
+  // 2. Also ensure default slots 0, 1, 2, 3 are included for discovery
+  const accountsToScan = [];
+  const scannedIndices = new Set();
 
-  // Auto-scan all active browser Gmail sessions (slots u/0 through u/5)
-  const slotsToScan = [0, 1, 2, 3, 4, 5].filter(idx => !userDisabledIndices.has(idx));
+  for (const acc of existingAccounts) {
+    scannedIndices.add(acc.index);
+    if (!acc.manuallyDisabled && acc.enabled !== false) {
+      accountsToScan.push(acc);
+    }
+  }
 
-  // Fetch all slots in parallel
-  const fetchPromises = slotsToScan.map(idx => fetchAccountFeed(idx));
+  for (let idx = 0; idx <= 3; idx++) {
+    if (!scannedIndices.has(idx)) {
+      accountsToScan.push({ index: idx, name: `Account ${idx + 1}`, enabled: true });
+      scannedIndices.add(idx);
+    }
+  }
+
+  // Fetch all accounts in parallel
+  const fetchPromises = accountsToScan.map(acc => fetchAccountFeed(acc));
   const results = await Promise.all(fetchPromises);
+
+  // Identify primary email (slot 0) to detect phantom duplicate redirects (e.g. slots 4/5 falling back to slot 0)
+  const slot0Result = results.find(r => r.accountIndex === 0 && !r.unauthorized);
+  const primaryEmail = slot0Result ? slot0Result.accountEmail : null;
 
   let totalUnread = 0;
   let anyAuthorized = false;
@@ -240,40 +256,25 @@ async function checkAllAccounts() {
   const newNotifiedIds = new Set(settings.notifiedIds || []);
   const brandNewEntries = [];
   const cachedFeeds = {};
-  const existingAccounts = settings.accounts || [];
-  const updatedAccounts = [];
 
   for (const res of results) {
+    // Detect phantom Google redirect: non-zero slot returning the exact same email as slot 0
+    if (res.accountIndex > 0 && primaryEmail && res.accountEmail === primaryEmail) {
+      cachedFeeds[res.accountIndex] = {
+        unauthorized: true,
+        fullcount: 0,
+        accountEmail: '',
+        entries: [],
+        lastUpdated: new Date().toISOString(),
+        error: 'Redirect duplicate'
+      };
+      continue;
+    }
+
     if (!res.unauthorized) {
       anyAuthorized = true;
       allEnabledUnauthorized = false;
       totalUnread += res.fullcount;
-
-      let accConfig = existingAccounts.find(a => a.index === res.accountIndex);
-      const emailPrefix = res.accountEmail ? res.accountEmail.split('@')[0] : `Account ${res.accountIndex + 1}`;
-
-      if (!accConfig) {
-        accConfig = {
-          index: res.accountIndex,
-          name: emailPrefix,
-          email: res.accountEmail || '',
-          enabled: true
-        };
-      } else {
-        const hasCustomName = accConfig.name &&
-          !accConfig.name.startsWith('Account ') &&
-          accConfig.name !== 'Personal' &&
-          accConfig.name !== 'Work' &&
-          accConfig.name !== 'Secondary';
-
-        accConfig = {
-          ...accConfig,
-          email: res.accountEmail || accConfig.email || '',
-          name: hasCustomName ? accConfig.name : emailPrefix,
-          enabled: true
-        };
-      }
-      updatedAccounts.push(accConfig);
 
       // Collect new unread entries from authenticated feeds
       if (Array.isArray(res.entries)) {
@@ -296,10 +297,38 @@ async function checkAllAccounts() {
     };
   }
 
-  // Preserve manually disabled accounts in storage so the user can re-enable them in settings
-  for (const acc of existingAccounts) {
-    if (acc.manuallyDisabled && !updatedAccounts.some(u => u.index === acc.index)) {
-      updatedAccounts.push(acc);
+  // CRITICAL: NEVER delete user-configured accounts!
+  // Start with all existing accounts, updating their email and details if found
+  const updatedAccounts = existingAccounts.map(acc => {
+    const res = results.find(r => r.accountIndex === acc.index);
+    if (res && !res.unauthorized && res.accountEmail) {
+      const emailPrefix = res.accountEmail.split('@')[0];
+      const hasCustomName = acc.name &&
+        !acc.name.startsWith('Account ') &&
+        acc.name !== 'Personal' &&
+        acc.name !== 'Work' &&
+        acc.name !== 'Secondary';
+
+      return {
+        ...acc,
+        email: res.accountEmail,
+        name: hasCustomName ? acc.name : emailPrefix
+      };
+    }
+    return { ...acc };
+  });
+
+  // Add any newly discovered authorized accounts not already in existingAccounts
+  for (const res of results) {
+    if (!res.unauthorized && res.accountEmail && (res.accountEmail !== primaryEmail || res.accountIndex === 0)) {
+      if (!updatedAccounts.some(a => a.index === res.accountIndex)) {
+        updatedAccounts.push({
+          index: res.accountIndex,
+          name: res.accountEmail.split('@')[0],
+          email: res.accountEmail,
+          enabled: true
+        });
+      }
     }
   }
 
@@ -360,7 +389,7 @@ async function checkAllAccounts() {
   // Prune notifiedIds to prevent unbounded storage growth (keep latest MAX_NOTIFIED_IDS)
   const trimmedNotifiedIds = Array.from(newNotifiedIds).slice(-MAX_NOTIFIED_IDS);
 
-  // Save cache, notifiedIds, and any auto-discovered account details
+  // Save cache, notifiedIds, and accounts safely
   const storageUpdate = {
     cachedFeeds,
     notifiedIds: trimmedNotifiedIds,
