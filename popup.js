@@ -210,6 +210,7 @@ async function loadState() {
     vipKeywords: 'urgent, invoice, სასწრაფო, კოდი, verification, გადახდა, security, auth',
     aiEndpoint: 'http://localhost:1234/v1/chat/completions',
     aiModel: 'local-model',
+    locallyReadIds: [],
     cachedFeeds: {},
     lastGlobalCheck: null
   });
@@ -259,6 +260,7 @@ function updateLastSyncTimeUI(isoString) {
 function processCachedEmails() {
   allEmails = [];
   const accounts = appSettings.accounts || [];
+  const locallyReadIds = new Set(appSettings.locallyReadIds || []);
   let anyAuthorizedAccount = false;
 
   // Scan all feeds in cachedFeedData
@@ -278,6 +280,9 @@ function processCachedEmails() {
       anyAuthorizedAccount = true;
       if (Array.isArray(feed.entries)) {
         for (const entry of feed.entries) {
+          if (locallyReadIds.has(entry.id)) {
+            continue; // Skip locally read emails
+          }
           allEmails.push({
             ...entry,
             accountIndex: idx,
@@ -341,11 +346,13 @@ function renderAccountTabs() {
   accountTabsEl.appendChild(allTabBtn);
 
   // Individual Account Tabs
+  const locallyReadIds = new Set(appSettings.locallyReadIds || []);
   for (const idx of indicesToShow) {
     const accConfig = accounts.find(a => a.index === idx);
     const feed = cachedFeedData[idx];
     const isUnauthorized = feed ? feed.unauthorized : false;
-    const count = feed && !isUnauthorized ? (feed.fullcount || 0) : 0;
+    const unreadEntries = (feed?.entries || []).filter(e => !locallyReadIds.has(e.id));
+    const count = feed && !isUnauthorized ? unreadEntries.length : 0;
     const emailStr = accConfig?.email || feed?.accountEmail || '';
     const displayName = accConfig?.name || (emailStr ? emailStr.split('@')[0] : `u/${idx}`);
 
@@ -473,6 +480,7 @@ function createEmailCard(entry, isVip) {
   // Open email link on click
   card.addEventListener('click', () => {
     chrome.tabs.create({ url: entry.link });
+    handleMarkAsRead(entry, card, false);
   });
 
   // Top Meta
@@ -494,12 +502,32 @@ function createEmailCard(entry, isVip) {
     tagsGroup.appendChild(vipTag);
   }
 
+  const metaRightGroup = document.createElement('div');
+  metaRightGroup.className = 'meta-right-group';
+
   const timeEl = document.createElement('span');
   timeEl.className = 'card-time';
   timeEl.textContent = formatRelativeTime(entry.issued);
+  metaRightGroup.appendChild(timeEl);
+
+  // Quick checkmark read button in top right of card
+  const btnQuickRead = document.createElement('button');
+  btnQuickRead.type = 'button';
+  btnQuickRead.className = 'btn-quick-read';
+  btnQuickRead.title = 'წაკითხულად მონიშვნა (Mark as read)';
+  btnQuickRead.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="20 6 9 17 4 12"></polyline>
+    </svg>
+  `;
+  btnQuickRead.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleMarkAsRead(entry, card, true);
+  });
+  metaRightGroup.appendChild(btnQuickRead);
 
   topMeta.appendChild(tagsGroup);
-  topMeta.appendChild(timeEl);
+  topMeta.appendChild(metaRightGroup);
   card.appendChild(topMeta);
 
   // Sender Row
@@ -543,7 +571,7 @@ function createEmailCard(entry, isVip) {
     card.appendChild(snippetEl);
   }
 
-  // Card Action Row (Smart OTP + AI Summary)
+  // Card Action Row (Smart OTP + AI Summary + Mark Read)
   const actionRow = document.createElement('div');
   actionRow.className = 'card-actions';
 
@@ -585,11 +613,124 @@ function createEmailCard(entry, isVip) {
     e.stopPropagation();
     await generateEmailSummary(entry, card, aiBtn);
   });
-
   actionRow.appendChild(aiBtn);
+
+  // Mark as Read Button in Actions
+  const markReadBtn = document.createElement('button');
+  markReadBtn.type = 'button';
+  markReadBtn.className = 'btn-mark-read';
+  markReadBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="20 6 9 17 4 12"></polyline>
+    </svg>
+    <span>წაკითხულია</span>
+  `;
+  markReadBtn.title = 'მონიშნე წაკითხულად (Mark as read)';
+  markReadBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleMarkAsRead(entry, card, true);
+  });
+  actionRow.appendChild(markReadBtn);
+
   card.appendChild(actionRow);
 
   return card;
+}
+
+/**
+ * Marks an individual email as read both locally and in background
+ */
+async function handleMarkAsRead(entry, cardEl, showNotification = true) {
+  cardEl.classList.add('fade-out-read');
+
+  if (!appSettings.locallyReadIds) {
+    appSettings.locallyReadIds = [];
+  }
+  if (!appSettings.locallyReadIds.includes(entry.id)) {
+    appSettings.locallyReadIds.push(entry.id);
+  }
+
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'MARK_EMAIL_READ',
+      id: entry.id,
+      link: entry.link,
+      accountIndex: entry.accountIndex
+    });
+  } catch (err) {
+    console.warn('Mark read message warning:', err);
+  }
+
+  setTimeout(() => {
+    cardEl.remove();
+    processCachedEmails();
+    renderAccountTabs();
+
+    const remainingCards = emailListEl.querySelectorAll('.email-card');
+    if (remainingCards.length === 0) {
+      renderEmailList();
+    }
+  }, 220);
+
+  if (showNotification) {
+    showToast('✓ წერილი მონიშნულია წაკითხულად');
+  }
+}
+
+/**
+ * Bulk Mark All as Read button handler
+ */
+function initMarkAllReadButton() {
+  const btn = document.getElementById('btnMarkAllRead');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    let emailsToMark = [];
+    if (currentTab === 'all') {
+      emailsToMark = allEmails;
+    } else {
+      const targetIdx = Number(currentTab);
+      emailsToMark = allEmails.filter(e => e.accountIndex === targetIdx);
+    }
+
+    if (emailsToMark.length === 0) {
+      showToast('წასაკითხი წერილები არ არის');
+      return;
+    }
+
+    const ids = emailsToMark.map(e => e.id);
+    const count = ids.length;
+
+    // Visual animation for all cards
+    const cards = emailListEl.querySelectorAll('.email-card');
+    cards.forEach(c => c.classList.add('fade-out-read'));
+
+    if (!appSettings.locallyReadIds) {
+      appSettings.locallyReadIds = [];
+    }
+    ids.forEach(id => {
+      if (!appSettings.locallyReadIds.includes(id)) {
+        appSettings.locallyReadIds.push(id);
+      }
+    });
+
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'MARK_ALL_READ',
+        ids: ids
+      });
+    } catch (err) {
+      console.warn('Mark all read notice:', err);
+    }
+
+    setTimeout(() => {
+      processCachedEmails();
+      renderAccountTabs();
+      renderEmailList();
+    }, 220);
+
+    showToast(`✓ ყველა წერილი (${count}) მონიშნულია წაკითხულად`);
+  });
 }
 
 /**
@@ -992,6 +1133,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initComposeButton();
   initSoundQuickToggle();
   initFilter();
+  initMarkAllReadButton();
   initRefresh();
   initSettingsModal();
 

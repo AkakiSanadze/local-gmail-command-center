@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS = {
   aiEndpoint: 'http://localhost:1234/v1/chat/completions',
   aiModel: 'local-model',
   notifiedIds: [],
+  locallyReadIds: [],
   cachedFeeds: {}
 };
 
@@ -254,6 +255,7 @@ async function checkAllAccounts() {
   let anyAuthorized = false;
   let allEnabledUnauthorized = true;
   const newNotifiedIds = new Set(settings.notifiedIds || []);
+  const locallyReadIds = new Set(settings.locallyReadIds || []);
   const brandNewEntries = [];
   const cachedFeeds = {};
 
@@ -271,25 +273,30 @@ async function checkAllAccounts() {
       continue;
     }
 
+    let effectiveCount = 0;
     if (!res.unauthorized) {
       anyAuthorized = true;
       allEnabledUnauthorized = false;
-      totalUnread += res.fullcount;
+
+      // Filter out locally read entries
+      const unreadEntries = (res.entries || []).filter(e => !locallyReadIds.has(e.id));
+      const readDeduction = (res.entries || []).length - unreadEntries.length;
+      effectiveCount = Math.max(0, res.fullcount - readDeduction);
+      totalUnread += effectiveCount;
 
       // Collect new unread entries from authenticated feeds
-      if (Array.isArray(res.entries)) {
-        for (const entry of res.entries) {
-          if (!newNotifiedIds.has(entry.id)) {
-            brandNewEntries.push(entry);
-            newNotifiedIds.add(entry.id);
-          }
+      for (const entry of unreadEntries) {
+        if (!newNotifiedIds.has(entry.id)) {
+          brandNewEntries.push(entry);
+          newNotifiedIds.add(entry.id);
         }
       }
     }
 
     cachedFeeds[res.accountIndex] = {
       unauthorized: res.unauthorized,
-      fullcount: res.fullcount,
+      fullcount: effectiveCount,
+      rawCount: res.fullcount,
       accountEmail: res.accountEmail,
       entries: res.entries,
       lastUpdated: new Date().toISOString(),
@@ -497,6 +504,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const settings = await getSettings();
       await setupAlarm(settings.pollInterval);
       sendResponse({ success: true });
+    })();
+    return true;
+  }
+
+  if (message.action === 'MARK_EMAIL_READ') {
+    (async () => {
+      try {
+        const settings = await getSettings();
+        const locallyReadSet = new Set(settings.locallyReadIds || []);
+        if (message.id) locallyReadSet.add(message.id);
+        if (Array.isArray(message.ids)) {
+          message.ids.forEach(id => locallyReadSet.add(id));
+        }
+        const trimmed = Array.from(locallyReadSet).slice(-1000);
+        await chrome.storage.local.set({ locallyReadIds: trimmed });
+
+        // If a message link is provided, briefly load it in a background tab to trigger Gmail web read flag
+        if (message.link) {
+          try {
+            const tab = await chrome.tabs.create({ url: message.link, active: false });
+            setTimeout(() => {
+              chrome.tabs.remove(tab.id).catch(() => {});
+            }, 2500);
+          } catch (e) {
+            console.warn('Background tab mark read notice:', e);
+          }
+        }
+
+        const summary = await checkAllAccounts();
+        sendResponse({ success: true, summary });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'MARK_ALL_READ') {
+    (async () => {
+      try {
+        const settings = await getSettings();
+        const locallyReadSet = new Set(settings.locallyReadIds || []);
+        if (Array.isArray(message.ids)) {
+          message.ids.forEach(id => locallyReadSet.add(id));
+        }
+        const trimmed = Array.from(locallyReadSet).slice(-1000);
+        await chrome.storage.local.set({ locallyReadIds: trimmed });
+
+        const summary = await checkAllAccounts();
+        sendResponse({ success: true, summary });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
     })();
     return true;
   }
