@@ -149,22 +149,52 @@ function extractOtpCode(text) {
 }
 
 /**
- * Normalizes Gmail atom links so they always target the correct account index:
- * e.g. https://mail.google.com/mail/u/{accountIndex}/...
+ * Normalizes any Gmail ID format (64-bit decimal integer, prefixed tag, or hex)
+ * into a standard 16-character lowercase hexadecimal thread/message ID.
  */
-function normalizeGmailLink(rawLink, accountIndex) {
-  if (!rawLink) {
-    return `https://mail.google.com/mail/u/${accountIndex}/#inbox`;
+function toHexThreadId(val) {
+  if (!val) return null;
+  const str = String(val).trim();
+
+  // 1. Standard 14-16 hex chars (Gmail hex IDs are 15-16 chars; 64-bit decimal IDs are 18-20 digits)
+  if (/^[0-9a-fA-F]{14,16}$/.test(str)) {
+    return str.toLowerCase();
   }
-  let link = rawLink.trim();
+
+  // 2. If prefixed like tag:gmail.google.com,2004:1827491048192847291 or msg-f:1827491048192847291
+  const tagMatch = str.match(/(?:tag:gmail\.google\.com,2004:|msg-f:|thread-f:)(\d+)/i);
+  if (tagMatch && tagMatch[1]) {
+    try {
+      return BigInt(tagMatch[1]).toString(16).toLowerCase();
+    } catch (_) {}
+  }
+
+  // 3. If it is a 64-bit decimal integer (17-20 digits)
+  if (/^\d{17,20}$/.test(str)) {
+    try {
+      return BigInt(str).toString(16).toLowerCase();
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+/**
+ * Normalizes Gmail atom links so they always target the correct account index:
+ * e.g. https://mail.google.com/mail/u/{accountIndex}?account_id=...&message_id=...
+ */
+function normalizeGmailLink(rawLink, accountIndex, messageId = null) {
+  if (!rawLink) {
+    return messageId
+      ? `https://mail.google.com/mail/u/${accountIndex}/#inbox/${messageId}`
+      : `https://mail.google.com/mail/u/${accountIndex}/#inbox`;
+  }
+  let link = rawLink.trim().replace(/^http:\/\//i, 'https://');
   if (link.includes('/mail/u/')) {
-    return link.replace(/\/mail\/u\/\d+\//, `/mail/u/${accountIndex}/`);
+    return link.replace(/\/mail\/u\/\d+/, `/mail/u/${accountIndex}`);
   }
   if (link.startsWith('https://mail.google.com/mail')) {
     return link.replace('https://mail.google.com/mail', `https://mail.google.com/mail/u/${accountIndex}`);
-  }
-  if (link.startsWith('http://mail.google.com/mail')) {
-    return link.replace('http://mail.google.com/mail', `https://mail.google.com/mail/u/${accountIndex}`);
   }
   return link;
 }
@@ -174,23 +204,27 @@ function normalizeGmailLink(rawLink, accountIndex) {
  */
 function extractHexMessageId(rawLink, atomId) {
   if (rawLink) {
-    const linkMatch = rawLink.match(/[?&](?:message_id|th)=([a-fA-F0-9]+)/i);
-    if (linkMatch && linkMatch[1]) {
-      return linkMatch[1];
+    const msgIdMatch = rawLink.match(/[?&](?:message_id|th|id)=([a-fA-F0-9]+)/i);
+    if (msgIdMatch && msgIdMatch[1]) {
+      const hex = toHexThreadId(msgIdMatch[1]);
+      if (hex) return hex;
+    }
+    const hashMatch = rawLink.match(/#(?:[a-zA-Z0-9_-]+)\/([a-fA-F0-9]{14,16})/i);
+    if (hashMatch && hashMatch[1]) {
+      return hashMatch[1].toLowerCase();
     }
   }
+
   if (atomId) {
-    const decMatch = atomId.match(/(?:msg-f:|thread-f:)(\d+)/i);
+    const hex = toHexThreadId(atomId);
+    if (hex) return hex;
+    const decMatch = atomId.match(/\b(\d{17,20})\b/);
     if (decMatch && decMatch[1]) {
-      try {
-        return BigInt(decMatch[1]).toString(16);
-      } catch (_) {}
-    }
-    const hexMatch = atomId.match(/([a-fA-F0-9]{15,16})$/);
-    if (hexMatch && hexMatch[1]) {
-      return hexMatch[1];
+      const h = toHexThreadId(decMatch[1]);
+      if (h) return h;
     }
   }
+
   return null;
 }
 
@@ -249,10 +283,10 @@ function parseGmailAtom(xmlText, accountIndex = 0) {
       const authorName = authorNameEl ? authorNameEl.textContent.trim() : '';
       const authorEmail = authorEmailEl ? authorEmailEl.textContent.trim() : '';
       const rawLink = linkEl ? linkEl.getAttribute('href') : '';
-      const link = normalizeGmailLink(rawLink, accountIndex);
       const id = idEl ? idEl.textContent.trim() : `${accountIndex}-${title}-${issuedEl ? issuedEl.textContent : Date.now()}`;
       const issued = issuedEl ? issuedEl.textContent.trim() : new Date().toISOString();
       const messageId = extractHexMessageId(rawLink, id);
+      const link = normalizeGmailLink(rawLink, accountIndex, messageId);
 
       // Detect OTP code in combined subject and summary
       const otpCode = extractOtpCode(`${title} ${summary}`);

@@ -280,7 +280,7 @@ function processCachedEmails() {
       anyAuthorizedAccount = true;
       if (Array.isArray(feed.entries)) {
         for (const entry of feed.entries) {
-          if (locallyReadIds.has(entry.id)) {
+          if (locallyReadIds.has(entry.id) || (entry.messageId && locallyReadIds.has(entry.messageId))) {
             continue; // Skip locally read emails
           }
           allEmails.push({
@@ -351,7 +351,7 @@ function renderAccountTabs() {
     const accConfig = accounts.find(a => a.index === idx);
     const feed = cachedFeedData[idx];
     const isUnauthorized = feed ? feed.unauthorized : false;
-    const unreadEntries = (feed?.entries || []).filter(e => !locallyReadIds.has(e.id));
+    const unreadEntries = (feed?.entries || []).filter(e => !locallyReadIds.has(e.id) && !(e.messageId && locallyReadIds.has(e.messageId)));
     const count = feed && !isUnauthorized ? unreadEntries.length : 0;
     const emailStr = accConfig?.email || feed?.accountEmail || '';
     const displayName = accConfig?.name || (emailStr ? emailStr.split('@')[0] : `u/${idx}`);
@@ -678,38 +678,121 @@ function createEmailCard(entry, isVip) {
 async function handleMarkAsRead(entry, cardEl, showNotification = true) {
   cardEl.classList.add('fade-out-read');
 
-  if (!appSettings.locallyReadIds) {
-    appSettings.locallyReadIds = [];
-  }
-  if (!appSettings.locallyReadIds.includes(entry.id)) {
-    appSettings.locallyReadIds.push(entry.id);
-  }
+  let serverSynced = false;
+  let needsPreauth = false;
 
   try {
-    await chrome.runtime.sendMessage({
+    const res = await chrome.runtime.sendMessage({
       action: 'MARK_EMAIL_READ',
       id: entry.id,
       messageId: entry.messageId,
       link: entry.link,
       accountIndex: entry.accountIndex
     });
+    if (res) {
+      serverSynced = !!res.serverSynced;
+      needsPreauth = !!res.needsPreauth;
+    }
   } catch (err) {
     console.warn('Mark read message warning:', err);
   }
 
-  setTimeout(() => {
-    cardEl.remove();
-    processCachedEmails();
-    renderAccountTabs();
-
-    const remainingCards = emailListEl.querySelectorAll('.email-card');
-    if (remainingCards.length === 0) {
-      renderEmailList();
+  if (serverSynced) {
+    if (!appSettings.locallyReadIds) {
+      appSettings.locallyReadIds = [];
     }
-  }, 220);
+    if (!appSettings.locallyReadIds.includes(entry.id)) {
+      appSettings.locallyReadIds.push(entry.id);
+    }
+    if (entry.messageId && !appSettings.locallyReadIds.includes(entry.messageId)) {
+      appSettings.locallyReadIds.push(entry.messageId);
+    }
 
-  if (showNotification) {
-    showToast('✓ წერილი მონიშნულია წაკითხულად');
+    setTimeout(() => {
+      cardEl.remove();
+      processCachedEmails();
+      renderAccountTabs();
+
+      const remainingCards = emailListEl.querySelectorAll('.email-card');
+      if (remainingCards.length === 0) {
+        renderEmailList();
+      }
+    }, 220);
+
+    if (showNotification) {
+      showToast('✓ წერილი მონიშნულია წაკითხულად');
+    }
+  } else {
+    cardEl.classList.remove('fade-out-read');
+    if (showNotification) {
+      if (needsPreauth) {
+        showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
+      } else {
+        showToast('⚠️ Gmail სესია გასაახლებელია (სცადეთ თავიდან)');
+      }
+    }
+  }
+}
+
+/**
+ * Deletes an individual email (moves to Trash) in real Gmail and hides locally
+ */
+async function handleDeleteEmail(entry, cardEl, showNotification = true) {
+  cardEl.classList.add('fade-out-read');
+
+  let serverSynced = false;
+  let needsPreauth = false;
+
+  try {
+    const res = await chrome.runtime.sendMessage({
+      action: 'DELETE_EMAIL',
+      id: entry.id,
+      messageId: entry.messageId,
+      link: entry.link,
+      accountIndex: entry.accountIndex
+    });
+    if (res) {
+      serverSynced = !!res.serverSynced;
+      needsPreauth = !!res.needsPreauth;
+    }
+  } catch (err) {
+    console.warn('Delete email message warning:', err);
+  }
+
+  if (serverSynced) {
+    if (!appSettings.locallyReadIds) {
+      appSettings.locallyReadIds = [];
+    }
+    if (!appSettings.locallyReadIds.includes(entry.id)) {
+      appSettings.locallyReadIds.push(entry.id);
+    }
+    if (entry.messageId && !appSettings.locallyReadIds.includes(entry.messageId)) {
+      appSettings.locallyReadIds.push(entry.messageId);
+    }
+
+    setTimeout(() => {
+      cardEl.remove();
+      processCachedEmails();
+      renderAccountTabs();
+
+      const remainingCards = emailListEl.querySelectorAll('.email-card');
+      if (remainingCards.length === 0) {
+        renderEmailList();
+      }
+    }, 220);
+
+    if (showNotification) {
+      showToast('🗑️ წერილი გადატანილია სანაგვეში');
+    }
+  } else {
+    cardEl.classList.remove('fade-out-read');
+    if (showNotification) {
+      if (needsPreauth) {
+        showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
+      } else {
+        showToast('⚠️ Gmail-იდან წაშლა ვერ მოხერხდა (სცადეთ თავიდან)');
+      }
+    }
   }
 }
 
@@ -788,32 +871,137 @@ function initMarkAllReadButton() {
     const cards = emailListEl.querySelectorAll('.email-card');
     cards.forEach(c => c.classList.add('fade-out-read'));
 
-    if (!appSettings.locallyReadIds) {
-      appSettings.locallyReadIds = [];
-    }
-    ids.forEach(id => {
-      if (!appSettings.locallyReadIds.includes(id)) {
-        appSettings.locallyReadIds.push(id);
-      }
-    });
+    let serverSynced = false;
+    let needsPreauth = false;
 
     try {
-      await chrome.runtime.sendMessage({
+      const res = await chrome.runtime.sendMessage({
         action: 'MARK_ALL_READ',
         ids: ids,
         items: items
       });
+      if (res) {
+        serverSynced = !!res.serverSynced;
+        needsPreauth = !!res.needsPreauth;
+      }
     } catch (err) {
       console.warn('Mark all read notice:', err);
     }
 
-    setTimeout(() => {
-      processCachedEmails();
-      renderAccountTabs();
-      renderEmailList();
-    }, 220);
+    if (serverSynced) {
+      if (!appSettings.locallyReadIds) {
+        appSettings.locallyReadIds = [];
+      }
+      ids.forEach(id => {
+        if (!appSettings.locallyReadIds.includes(id)) {
+          appSettings.locallyReadIds.push(id);
+        }
+      });
+      items.forEach(it => {
+        if (it.messageId && !appSettings.locallyReadIds.includes(it.messageId)) {
+          appSettings.locallyReadIds.push(it.messageId);
+        }
+      });
 
-    showToast(`✓ ყველა წერილი (${count}) მონიშნულია წაკითხულად`);
+      setTimeout(() => {
+        processCachedEmails();
+        renderAccountTabs();
+        renderEmailList();
+      }, 220);
+
+      showToast(`✓ ყველა წერილი (${count}) მონიშნულია წაკითხულად`);
+    } else {
+      cards.forEach(c => c.classList.remove('fade-out-read'));
+      if (needsPreauth) {
+        showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
+      } else {
+        showToast('⚠️ Gmail სესია გასაახლებელია (სცადეთ თავიდან)');
+      }
+    }
+  });
+}
+
+/**
+ * Bulk Delete All emails button handler (moves all displayed emails to Trash in real Gmail)
+ */
+function initDeleteAllButton() {
+  const btn = document.getElementById('btnDeleteAll');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    let emailsToDelete = [];
+    if (currentTab === 'all') {
+      emailsToDelete = allEmails;
+    } else {
+      const targetIdx = Number(currentTab);
+      emailsToDelete = allEmails.filter(e => e.accountIndex === targetIdx);
+    }
+
+    if (emailsToDelete.length === 0) {
+      showToast('წასაშლელი წერილები არ არის');
+      return;
+    }
+
+    const count = emailsToDelete.length;
+    const ids = emailsToDelete.map(e => e.id);
+    const items = emailsToDelete.map(e => ({
+      id: e.id,
+      messageId: e.messageId,
+      link: e.link,
+      accountIndex: e.accountIndex
+    }));
+
+    // Visual animation for all cards
+    const cards = emailListEl.querySelectorAll('.email-card');
+    cards.forEach(c => c.classList.add('fade-out-read'));
+
+    let serverSynced = false;
+    let needsPreauth = false;
+
+    try {
+      const res = await chrome.runtime.sendMessage({
+        action: 'DELETE_ALL_EMAILS',
+        ids: ids,
+        items: items
+      });
+      if (res) {
+        serverSynced = !!res.serverSynced;
+        needsPreauth = !!res.needsPreauth;
+      }
+    } catch (err) {
+      console.warn('Delete all emails notice:', err);
+    }
+
+    if (serverSynced) {
+      if (!appSettings.locallyReadIds) {
+        appSettings.locallyReadIds = [];
+      }
+      ids.forEach(id => {
+        if (!appSettings.locallyReadIds.includes(id)) {
+          appSettings.locallyReadIds.push(id);
+        }
+      });
+      items.forEach(it => {
+        if (it.messageId && !appSettings.locallyReadIds.includes(it.messageId)) {
+          appSettings.locallyReadIds.push(it.messageId);
+        }
+      });
+
+      setTimeout(() => {
+        processCachedEmails();
+        renderAccountTabs();
+        renderEmailList();
+      }, 220);
+
+      showToast(`🗑️ ყველა წერილი (${count}) გადატანილია სანაგვეში`);
+    } else {
+      cards.forEach(c => c.classList.remove('fade-out-read'));
+      if (needsPreauth) {
+        showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
+      } else {
+        showToast('⚠️ Gmail-იდან წაშლა ვერ მოხერხდა (სცადეთ თავიდან)');
+      }
+    }
   });
 }
 
