@@ -170,6 +170,31 @@ function normalizeGmailLink(rawLink, accountIndex) {
 }
 
 /**
+ * Extracts the 16-char hexadecimal Gmail message/thread ID from the Atom entry link or tag ID.
+ */
+function extractHexMessageId(rawLink, atomId) {
+  if (rawLink) {
+    const linkMatch = rawLink.match(/[?&](?:message_id|th)=([a-fA-F0-9]+)/i);
+    if (linkMatch && linkMatch[1]) {
+      return linkMatch[1];
+    }
+  }
+  if (atomId) {
+    const decMatch = atomId.match(/(?:msg-f:|thread-f:)(\d+)/i);
+    if (decMatch && decMatch[1]) {
+      try {
+        return BigInt(decMatch[1]).toString(16);
+      } catch (_) {}
+    }
+    const hexMatch = atomId.match(/([a-fA-F0-9]{15,16})$/);
+    if (hexMatch && hexMatch[1]) {
+      return hexMatch[1];
+    }
+  }
+  return null;
+}
+
+/**
  * Native XML DOMParser for Gmail Atom Feed.
  */
 function parseGmailAtom(xmlText, accountIndex = 0) {
@@ -227,12 +252,14 @@ function parseGmailAtom(xmlText, accountIndex = 0) {
       const link = normalizeGmailLink(rawLink, accountIndex);
       const id = idEl ? idEl.textContent.trim() : `${accountIndex}-${title}-${issuedEl ? issuedEl.textContent : Date.now()}`;
       const issued = issuedEl ? issuedEl.textContent.trim() : new Date().toISOString();
+      const messageId = extractHexMessageId(rawLink, id);
 
       // Detect OTP code in combined subject and summary
       const otpCode = extractOtpCode(`${title} ${summary}`);
 
       entries.push({
         id,
+        messageId,
         title,
         summary,
         authorName: authorName || (authorEmail.split('@')[0] || 'Unknown'),

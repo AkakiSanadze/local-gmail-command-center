@@ -452,6 +452,193 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
   await chrome.tabs.create({ url: targetUrl });
 });
 
+// Cache for per-account Gmail action tokens: accountIndex -> { ik, at, expiresAt }
+const gmailTokensCache = new Map();
+
+/**
+ * Retrieves the GMAIL_AT anti-CSRF token for an account index via cookies or DOM scraping.
+ */
+async function getGmailAtToken(accountIndex) {
+  try {
+    const cookie = await chrome.cookies.get({
+      name: 'GMAIL_AT',
+      url: `https://mail.google.com/mail/u/${accountIndex}/`
+    });
+    if (cookie && cookie.value) return cookie.value;
+
+    const fallbackCookie = await chrome.cookies.get({
+      name: 'GMAIL_AT',
+      url: 'https://mail.google.com/mail/'
+    });
+    if (fallbackCookie && fallbackCookie.value && accountIndex === 0) {
+      return fallbackCookie.value;
+    }
+  } catch (err) {
+    console.warn('Cookie read warning:', err);
+  }
+
+  // Fallback: scrape from /h/ or standard inbox HTML
+  for (const path of [`/mail/u/${accountIndex}/h/`, `/mail/u/${accountIndex}/`]) {
+    try {
+      const res = await fetch(`https://mail.google.com${path}`, { credentials: 'include' });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const gmMatch = html.match(/GM_ACTION_TOKEN\s*=\s*["']([^"']+)["']/);
+      if (gmMatch?.[1]) return gmMatch[1];
+      const atParamMatch = html.match(/[?&]at=([^&"'<>]+)/);
+      if (atParamMatch?.[1]) return decodeURIComponent(atParamMatch[1]);
+      const inputMatch = html.match(/name=["']at["']\s+value=["']([^"']+)["']/i);
+      if (inputMatch?.[1] && inputMatch[1] !== 'null') return inputMatch[1];
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * Retrieves the ik (ID_KEY) parameter for an account index.
+ */
+async function getGmailIkToken(accountIndex) {
+  let href = `https://mail.google.com/mail/u/${accountIndex}/s/`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(href, { credentials: 'include' });
+      if (!res.ok) break;
+      const text = await res.text();
+      const ikMatch = text.match(/ID_KEY\s*=\s*['"]([^'"]+)['"]/);
+      if (ikMatch?.[1]) return ikMatch[1];
+
+      const refreshMatch = text.match(/http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"'\s>]+)/i);
+      if (refreshMatch?.[1]) {
+        href = new URL(refreshMatch[1].replace(/&amp;/g, '&'), href).href;
+        continue;
+      }
+    } catch (_) {}
+  }
+
+  // Fallback: extract ik from standard Gmail page GLOBALS array (index 9) or URL parameters
+  try {
+    const res = await fetch(`https://mail.google.com/mail/u/${accountIndex}/`, { credentials: 'include' });
+    if (res.ok) {
+      const html = await res.text();
+      const globalsMatch = html.match(/var\s+GLOBALS\s*=\s*\[(?:[^,\]]*,){9}\s*["']([a-zA-Z0-9_-]+)["']/);
+      if (globalsMatch?.[1]) return globalsMatch[1];
+      const ikParamMatch = html.match(/[?&]ik=([a-zA-Z0-9_-]+)/);
+      if (ikParamMatch?.[1]) return ikParamMatch[1];
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * Gets cached or freshly retrieved action tokens (at, ik) for an account index.
+ */
+async function getAccountActionTokens(accountIndex, forceRefresh = false) {
+  const cached = gmailTokensCache.get(accountIndex);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return cached;
+  }
+  const [at, ik] = await Promise.all([
+    getGmailAtToken(accountIndex),
+    getGmailIkToken(accountIndex)
+  ]);
+  if (at) {
+    const entry = { at, ik: ik || '', expiresAt: Date.now() + 10 * 60 * 1000 };
+    gmailTokensCache.set(accountIndex, entry);
+    return entry;
+  }
+  return { at: null, ik: null };
+}
+
+/**
+ * Executes a real server-side action on Gmail ('tr' = Trash/Delete, 'rd' = Mark as Read).
+ */
+async function executeGmailServerAction(accountIndex, messageIds, cmd) {
+  const validIds = (Array.isArray(messageIds) ? messageIds : [messageIds]).filter(Boolean);
+  if (validIds.length === 0) return false;
+
+  let { at, ik } = await getAccountActionTokens(accountIndex);
+  if (!at) {
+    ({ at, ik } = await getAccountActionTokens(accountIndex, true));
+  }
+  if (!at) {
+    console.warn(`Could not obtain GMAIL_AT token for account u/${accountIndex}`);
+    return false;
+  }
+
+  const actionCode = cmd === 'tr' ? 9 : 3; // 9 = Trash/Delete, 3 = Mark as Read
+
+  // 1. Primary endpoint: /s/?v=or JSON-RPC batch endpoint
+  if (ik) {
+    try {
+      const body = new FormData();
+      body.append('s_jr', JSON.stringify([null, [
+        ...validIds.map(id => [null, null, null, [
+          null, actionCode, id, id, 'l:all', [], [], []
+        ]]),
+        [null, null, null, null, null, null, [null, true, false]],
+        [null, null, null, null, null, null, [null, true, false]]
+      ], 2, null, null, null, ik]));
+
+      const url = `https://mail.google.com/mail/u/${accountIndex}/s/?v=or&ik=${encodeURIComponent(ik)}&at=${encodeURIComponent(at)}&subui=chrome&hl=en&ts=${Date.now()}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        body
+      });
+      if (res.ok) {
+        const text = await res.text();
+        if (text && !text.includes('/spreauth')) {
+          return true;
+        }
+      }
+    } catch (err) {
+      console.warn('Primary /s/ action endpoint notice:', err);
+    }
+  }
+
+  // 2. Fallback endpoint: /?ui=2&act=tr|rd form POST
+  try {
+    const params = new URLSearchParams();
+    for (const id of validIds) {
+      params.append('t', id);
+    }
+    const ikParam = ik ? `&ik=${encodeURIComponent(ik)}` : '';
+    const url = `https://mail.google.com/mail/u/${accountIndex}/?ui=2${ikParam}&at=${encodeURIComponent(at)}&act=${encodeURIComponent(cmd)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: params.toString()
+    });
+    if (res.ok) return true;
+  } catch (err) {
+    console.warn('Fallback ui=2 action endpoint notice:', err);
+  }
+
+  return false;
+}
+
+/**
+ * Resolves hex message ID from entry properties.
+ */
+function resolveHexMessageId(entry) {
+  if (!entry) return null;
+  if (entry.messageId) return entry.messageId;
+  const link = entry.link || '';
+  const linkMatch = link.match(/[?&](?:message_id|th)=([a-fA-F0-9]+)/i);
+  if (linkMatch && linkMatch[1]) return linkMatch[1];
+  const idStr = entry.id || '';
+  const decMatch = idStr.match(/(?:msg-f:|thread-f:)(\d+)/i);
+  if (decMatch && decMatch[1]) {
+    try {
+      return BigInt(decMatch[1]).toString(16);
+    } catch (_) {}
+  }
+  const hexMatch = idStr.match(/([a-fA-F0-9]{15,16})$/);
+  if (hexMatch && hexMatch[1]) return hexMatch[1];
+  return null;
+}
+
 // Runtime message listener for UI commands
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'REFRESH_NOW') {
@@ -514,26 +701,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await getSettings();
         const locallyReadSet = new Set(settings.locallyReadIds || []);
         if (message.id) locallyReadSet.add(message.id);
-        if (Array.isArray(message.ids)) {
-          message.ids.forEach(id => locallyReadSet.add(id));
-        }
         const trimmed = Array.from(locallyReadSet).slice(-1000);
         await chrome.storage.local.set({ locallyReadIds: trimmed });
 
-        // If a message link is provided, briefly load it in a background tab to trigger Gmail web read flag
-        if (message.link) {
-          try {
-            const tab = await chrome.tabs.create({ url: message.link, active: false });
-            setTimeout(() => {
-              chrome.tabs.remove(tab.id).catch(() => {});
-            }, 2500);
-          } catch (e) {
-            console.warn('Background tab mark read notice:', e);
-          }
+        const messageId = resolveHexMessageId(message);
+        const accountIndex = Number(message.accountIndex) || 0;
+        let serverSynced = false;
+        if (messageId) {
+          serverSynced = await executeGmailServerAction(accountIndex, [messageId], 'rd');
         }
 
         const summary = await checkAllAccounts();
-        sendResponse({ success: true, summary });
+        sendResponse({ success: true, serverSynced, summary });
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }
@@ -546,11 +725,96 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const settings = await getSettings();
         const locallyReadSet = new Set(settings.locallyReadIds || []);
-        if (Array.isArray(message.ids)) {
-          message.ids.forEach(id => locallyReadSet.add(id));
-        }
+        const items = Array.isArray(message.items) ? message.items : [];
+        const ids = Array.isArray(message.ids) ? message.ids : items.map(i => i.id);
+
+        ids.forEach(id => {
+          if (id) locallyReadSet.add(id);
+        });
         const trimmed = Array.from(locallyReadSet).slice(-1000);
         await chrome.storage.local.set({ locallyReadIds: trimmed });
+
+        // Group server requests by accountIndex
+        const grouped = new Map();
+        for (const item of items) {
+          const accIdx = Number(item.accountIndex) || 0;
+          const msgId = resolveHexMessageId(item);
+          if (msgId) {
+            if (!grouped.has(accIdx)) grouped.set(accIdx, []);
+            grouped.get(accIdx).push(msgId);
+          }
+        }
+
+        await Promise.all(
+          Array.from(grouped.entries()).map(([accIdx, msgIds]) =>
+            executeGmailServerAction(accIdx, msgIds, 'rd')
+          )
+        );
+
+        const summary = await checkAllAccounts();
+        sendResponse({ success: true, summary });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'DELETE_EMAIL') {
+    (async () => {
+      try {
+        const settings = await getSettings();
+        const locallyReadSet = new Set(settings.locallyReadIds || []);
+        if (message.id) locallyReadSet.add(message.id);
+        const trimmed = Array.from(locallyReadSet).slice(-1000);
+        await chrome.storage.local.set({ locallyReadIds: trimmed });
+
+        const messageId = resolveHexMessageId(message);
+        const accountIndex = Number(message.accountIndex) || 0;
+        let serverSynced = false;
+        if (messageId) {
+          serverSynced = await executeGmailServerAction(accountIndex, [messageId], 'tr');
+        }
+
+        const summary = await checkAllAccounts();
+        sendResponse({ success: true, serverSynced, summary });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'DELETE_ALL_EMAILS') {
+    (async () => {
+      try {
+        const settings = await getSettings();
+        const locallyReadSet = new Set(settings.locallyReadIds || []);
+        const items = Array.isArray(message.items) ? message.items : [];
+        const ids = Array.isArray(message.ids) ? message.ids : items.map(i => i.id);
+
+        ids.forEach(id => {
+          if (id) locallyReadSet.add(id);
+        });
+        const trimmed = Array.from(locallyReadSet).slice(-1000);
+        await chrome.storage.local.set({ locallyReadIds: trimmed });
+
+        // Group server requests by accountIndex
+        const grouped = new Map();
+        for (const item of items) {
+          const accIdx = Number(item.accountIndex) || 0;
+          const msgId = resolveHexMessageId(item);
+          if (msgId) {
+            if (!grouped.has(accIdx)) grouped.set(accIdx, []);
+            grouped.get(accIdx).push(msgId);
+          }
+        }
+
+        await Promise.all(
+          Array.from(grouped.entries()).map(([accIdx, msgIds]) =>
+            executeGmailServerAction(accIdx, msgIds, 'tr')
+          )
+        );
 
         const summary = await checkAllAccounts();
         sendResponse({ success: true, summary });

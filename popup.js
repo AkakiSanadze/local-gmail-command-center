@@ -526,6 +526,23 @@ function createEmailCard(entry, isVip) {
   });
   metaRightGroup.appendChild(btnQuickRead);
 
+  // Quick delete button in top right of card
+  const btnQuickDelete = document.createElement('button');
+  btnQuickDelete.type = 'button';
+  btnQuickDelete.className = 'btn-quick-delete';
+  btnQuickDelete.title = 'წაშლა (Move to Trash)';
+  btnQuickDelete.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 6 5 6 21 6"></polyline>
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+    </svg>
+  `;
+  btnQuickDelete.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleDeleteEmail(entry, card, true);
+  });
+  metaRightGroup.appendChild(btnQuickDelete);
+
   topMeta.appendChild(tagsGroup);
   topMeta.appendChild(metaRightGroup);
   card.appendChild(topMeta);
@@ -571,7 +588,7 @@ function createEmailCard(entry, isVip) {
     card.appendChild(snippetEl);
   }
 
-  // Card Action Row (Smart OTP + AI Summary + Mark Read)
+  // Card Action Row (Smart OTP + AI Summary + Mark Read + Delete)
   const actionRow = document.createElement('div');
   actionRow.className = 'card-actions';
 
@@ -632,6 +649,24 @@ function createEmailCard(entry, isVip) {
   });
   actionRow.appendChild(markReadBtn);
 
+  // Delete / Trash Button in Actions
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'btn-delete-email';
+  deleteBtn.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 6 5 6 21 6"></polyline>
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+    </svg>
+    <span>წაშლა</span>
+  `;
+  deleteBtn.title = 'წაშლა / სანაგვეში გადატანა (Trash)';
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleDeleteEmail(entry, card, true);
+  });
+  actionRow.appendChild(deleteBtn);
+
   card.appendChild(actionRow);
 
   return card;
@@ -654,6 +689,7 @@ async function handleMarkAsRead(entry, cardEl, showNotification = true) {
     await chrome.runtime.sendMessage({
       action: 'MARK_EMAIL_READ',
       id: entry.id,
+      messageId: entry.messageId,
       link: entry.link,
       accountIndex: entry.accountIndex
     });
@@ -674,6 +710,47 @@ async function handleMarkAsRead(entry, cardEl, showNotification = true) {
 
   if (showNotification) {
     showToast('✓ წერილი მონიშნულია წაკითხულად');
+  }
+}
+
+/**
+ * Deletes an individual email (moves to Trash) in real Gmail and hides locally
+ */
+async function handleDeleteEmail(entry, cardEl, showNotification = true) {
+  cardEl.classList.add('fade-out-read');
+
+  if (!appSettings.locallyReadIds) {
+    appSettings.locallyReadIds = [];
+  }
+  if (!appSettings.locallyReadIds.includes(entry.id)) {
+    appSettings.locallyReadIds.push(entry.id);
+  }
+
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'DELETE_EMAIL',
+      id: entry.id,
+      messageId: entry.messageId,
+      link: entry.link,
+      accountIndex: entry.accountIndex
+    });
+  } catch (err) {
+    console.warn('Delete email message warning:', err);
+  }
+
+  setTimeout(() => {
+    cardEl.remove();
+    processCachedEmails();
+    renderAccountTabs();
+
+    const remainingCards = emailListEl.querySelectorAll('.email-card');
+    if (remainingCards.length === 0) {
+      renderEmailList();
+    }
+  }, 220);
+
+  if (showNotification) {
+    showToast('🗑️ წერილი გადატანილია სანაგვეში');
   }
 }
 
@@ -700,6 +777,12 @@ function initMarkAllReadButton() {
 
     const ids = emailsToMark.map(e => e.id);
     const count = ids.length;
+    const items = emailsToMark.map(e => ({
+      id: e.id,
+      messageId: e.messageId,
+      link: e.link,
+      accountIndex: e.accountIndex
+    }));
 
     // Visual animation for all cards
     const cards = emailListEl.querySelectorAll('.email-card');
@@ -717,7 +800,8 @@ function initMarkAllReadButton() {
     try {
       await chrome.runtime.sendMessage({
         action: 'MARK_ALL_READ',
-        ids: ids
+        ids: ids,
+        items: items
       });
     } catch (err) {
       console.warn('Mark all read notice:', err);
@@ -730,6 +814,69 @@ function initMarkAllReadButton() {
     }, 220);
 
     showToast(`✓ ყველა წერილი (${count}) მონიშნულია წაკითხულად`);
+  });
+}
+
+/**
+ * Bulk Delete All emails button handler (moves all displayed emails to Trash in real Gmail)
+ */
+function initDeleteAllButton() {
+  const btn = document.getElementById('btnDeleteAll');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    let emailsToDelete = [];
+    if (currentTab === 'all') {
+      emailsToDelete = allEmails;
+    } else {
+      const targetIdx = Number(currentTab);
+      emailsToDelete = allEmails.filter(e => e.accountIndex === targetIdx);
+    }
+
+    if (emailsToDelete.length === 0) {
+      showToast('წასაშლელი წერილები არ არის');
+      return;
+    }
+
+    const count = emailsToDelete.length;
+    const ids = emailsToDelete.map(e => e.id);
+    const items = emailsToDelete.map(e => ({
+      id: e.id,
+      messageId: e.messageId,
+      link: e.link,
+      accountIndex: e.accountIndex
+    }));
+
+    // Visual animation for all cards
+    const cards = emailListEl.querySelectorAll('.email-card');
+    cards.forEach(c => c.classList.add('fade-out-read'));
+
+    if (!appSettings.locallyReadIds) {
+      appSettings.locallyReadIds = [];
+    }
+    ids.forEach(id => {
+      if (!appSettings.locallyReadIds.includes(id)) {
+        appSettings.locallyReadIds.push(id);
+      }
+    });
+
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'DELETE_ALL_EMAILS',
+        ids: ids,
+        items: items
+      });
+    } catch (err) {
+      console.warn('Delete all emails notice:', err);
+    }
+
+    setTimeout(() => {
+      processCachedEmails();
+      renderAccountTabs();
+      renderEmailList();
+    }, 220);
+
+    showToast(`🗑️ ყველა წერილი (${count}) გადატანილია სანაგვეში`);
   });
 }
 
@@ -1134,6 +1281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSoundQuickToggle();
   initFilter();
   initMarkAllReadButton();
+  initDeleteAllButton();
   initRefresh();
   initSettingsModal();
 
