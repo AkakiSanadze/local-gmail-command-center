@@ -37,10 +37,9 @@
 - **Focus Mode:** მომენტალური გაჩუმება (ხმისა და ნოთიფიკაციების დროებითი გათიშვა).
 - **VIP ფილტრი:** შესაძლებლობა მიიღოთ ხმოვანი სიგნალი და ნოთიფიკაცია მხოლოდ VIP სიტყვების დამთხვევისას (მაგ: `urgent, invoice, სასწრაფო, კოდი, verification, გადახდა`).
 
-### 6. 🤖 Local AI Summary Bridge
+### 6. 🤖 LM Studio AI Summary Bridge
 - თითოეულ წერილს აქვს ღილაკი **`✨ AI Summary`**.
-- ჯერ ამოწმებს Chrome-ის ჩაშენებულ ონ-დივაის AI-ს (`globalThis.LanguageModel` / `window.ai`).
-- თუ ბრაუზერში არ არის, მიმართავს Settings-ში მითითებულ ლოკალურ Endpoint-ს (მაგ: `http://localhost:1234/v1/chat/completions` — LM Studio, Ollama, LocalAI) და უსაფრთხოდ გამოაქვს 1-წინადადებიანი შეჯამება.
+- პირდაპირ მიმართავს Settings-ში მითითებულ LM Studio Endpoint-ს (ნაგულისხმევად: `http://localhost:1234/v1/chat/completions` — LM Studio, Ollama, LocalAI) და უსაფრთხოდ გამოაქვს 1-წინადადებიანი შეჯამება (მათ შორის Reasoning მოდელების `<think>` ტეგების ავტომატური გაფილტვრით).
 
 ### 7. 📱 Dual UI: Popup (380px) + Chrome Side Panel (100%)
 - ერთიანი ადაპტირებული ინტერფეისი როგორც პატარა Toolbar Popup-ისთვის (`380px`), ისე ბრაუზერის გვერდითა პანელისთვის (`100%`).

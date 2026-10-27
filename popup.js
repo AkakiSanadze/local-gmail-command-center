@@ -1049,7 +1049,7 @@ function initDeleteAllButton() {
 }
 
 /**
- * AI Summary Generation: Prompt API (Gemini Nano) -> Localhost LLM Fallback
+ * AI Summary Generation: Direct LM Studio & Localhost LLM Bridge
  */
 async function generateEmailSummary(entry, cardEl, aiBtn) {
   // If already summarized in this card, don't re-run
@@ -1063,7 +1063,7 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
   const summaryContainer = document.createElement('div');
   summaryContainer.className = 'ai-summary-box';
   summaryContainer.innerHTML = `
-    <div class="ai-summary-header">✨ AI შეჯამება</div>
+    <div class="ai-summary-header">✨ LM Studio შეჯამება</div>
     <div class="ai-summary-text">გენერირდება...</div>
   `;
   cardEl.appendChild(summaryContainer);
@@ -1072,35 +1072,10 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
   const emailText = `Subject: ${entry.title || ''}\nSender: ${entry.authorName || ''} <${entry.authorEmail || ''}>\nBody: ${entry.summary || ''}`;
   const systemPrompt = 'You are a concise email assistant. Summarize the key point of this email in 1 clear, helpful sentence. If in Georgian, reply in Georgian; otherwise in English.';
 
+  const endpoint = appSettings?.aiEndpoint || 'http://localhost:1234/v1/chat/completions';
+  const model = appSettings?.aiModel || 'local-model';
+
   try {
-    // 1. Try Chrome Built-in Prompt API (LanguageModel or window.ai)
-    if (typeof globalThis.LanguageModel !== 'undefined') {
-      const availability = await globalThis.LanguageModel.availability();
-      if (availability !== 'unavailable') {
-        const session = await globalThis.LanguageModel.create({
-          initialPrompts: [{ role: 'system', content: systemPrompt }]
-        });
-        const result = await session.prompt(emailText);
-        session.destroy();
-        textEl.textContent = result.trim();
-        aiBtn.remove();
-        return;
-      }
-    } else if (window.ai?.languageModel) {
-      const session = await window.ai.languageModel.create({
-        systemPrompt: systemPrompt
-      });
-      const result = await session.prompt(emailText);
-      session.destroy?.();
-      textEl.textContent = result.trim();
-      aiBtn.remove();
-      return;
-    }
-
-    // 2. Fallback to Localhost Endpoint (LM Studio / Ollama / LocalAI)
-    const endpoint = appSettings.aiEndpoint || 'http://localhost:1234/v1/chat/completions';
-    const model = appSettings.aiModel || 'local-model';
-
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1111,17 +1086,22 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
           { role: 'user', content: emailText }
         ],
         temperature: 0.3,
-        max_tokens: 300
+        max_tokens: 500
       })
     });
 
     if (!response.ok) {
-      throw new Error(`Localhost HTTP ${response.status}`);
+      throw new Error(`HTTP ${response.status} (${response.statusText || 'Error'})`);
     }
 
     const data = await response.json();
     const msg = data.choices?.[0]?.message;
-    let summary = msg?.content?.trim();
+    let summary = msg?.content || '';
+
+    // Strip internal reasoning tags if present (<think>...</think> for reasoning models like DeepSeek-R1)
+    summary = summary.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+    // Support reasoning_content for models that separate thoughts
     if (!summary && msg?.reasoning_content) {
       summary = msg.reasoning_content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     }
@@ -1130,10 +1110,10 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
       textEl.textContent = summary;
       aiBtn.remove();
     } else {
-      throw new Error('ცარიელი პასუხი');
+      throw new Error('მოდელმა დააბრუნა ცარიელი პასუხი');
     }
   } catch (err) {
-    textEl.textContent = `AI შეჯამება ვერ მოხერხდა (${err.message}). დარწმუნდით, რომ Localhost AI გაშვებულია (${appSettings.aiEndpoint}) ან ბრაუზერს აქვს Prompt API მხარდაჭერა.`;
+    textEl.textContent = `LM Studio AI შეჯამება ვერ მოხერხდა: ${err.message}. დარწმუნდით, რომ LM Studio-ში Local Server ჩართულია (${endpoint}).`;
     aiBtn.classList.remove('loading');
     aiBtn.textContent = '✨ ხელახლა';
   }
