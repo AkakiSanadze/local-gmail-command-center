@@ -1068,7 +1068,7 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
           { role: 'user', content: emailText }
         ],
         temperature: 0.3,
-        max_tokens: 100
+        max_tokens: 300
       })
     });
 
@@ -1077,7 +1077,11 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
     }
 
     const data = await response.json();
-    const summary = data.choices?.[0]?.message?.content?.trim();
+    const msg = data.choices?.[0]?.message;
+    let summary = msg?.content?.trim();
+    if (!summary && msg?.reasoning_content) {
+      summary = msg.reasoning_content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    }
 
     if (summary) {
       textEl.textContent = summary;
