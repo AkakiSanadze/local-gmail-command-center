@@ -10,7 +10,7 @@
 <body data-view="popup">
   <!-- Header / Navigation Bar -->
   <header class="app-header">
-    <div class="brand">
+    <div class="brand" id="brandHeader" role="button" tabindex="0" title="Gmail ინბოქსის გახსნა (Open Inbox)">
       <div class="logo-wrapper">
         <img src="icons/icon-48.png" alt="Gmail" class="brand-img">
         <span class="status-pulse" id="statusDot" title="სინქრონიზებულია"></span>
@@ -81,13 +81,22 @@
     <div class="tabs-scroll" id="accountTabs">
       <!-- Dynamic tabs injected by JS: All, u/0, u/1... -->
     </div>
-    <button type="button" class="btn-compose" id="btnCompose" title="ახალი წერილის დაწერა (Compose)">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 20h9"></path>
-        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-      </svg>
-      <span>Compose</span>
-    </button>
+    <div class="nav-actions">
+      <button type="button" class="btn-inbox" id="btnOpenInbox" title="Gmail ინბოქსის გახსნა (I ან G)" aria-label="Gmail ინბოქსი">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
+          <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+        </svg>
+        <span>Inbox</span>
+      </button>
+      <button type="button" class="btn-compose" id="btnCompose" title="ახალი წერილის დაწერა (C)" aria-label="ახალი წერილი">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+        </svg>
+        <span>Compose</span>
+      </button>
+    </div>
   </nav>
 
   <!-- Quick Filter / Search Bar -->

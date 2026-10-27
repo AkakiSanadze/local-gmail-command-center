@@ -15,6 +15,7 @@ let searchQuery = '';
 const bodyEl = document.body;
 const statusDotEl = document.getElementById('statusDot');
 const lastSyncTimeEl = document.getElementById('lastSyncTime');
+const brandHeaderEl = document.getElementById('brandHeader');
 const btnRefreshEl = document.getElementById('btnRefresh');
 const btnSoundToggleEl = document.getElementById('btnSoundToggle');
 const iconSoundOnEl = document.getElementById('iconSoundOn');
@@ -25,6 +26,7 @@ const iconMoonEl = document.getElementById('iconMoon');
 const btnSidePanelEl = document.getElementById('btnSidePanel');
 const btnSettingsEl = document.getElementById('btnSettings');
 const accountTabsEl = document.getElementById('accountTabs');
+const btnOpenInboxEl = document.getElementById('btnOpenInbox');
 const btnComposeEl = document.getElementById('btnCompose');
 const filterInputEl = document.getElementById('filterInput');
 const btnClearFilterEl = document.getElementById('btnClearFilter');
@@ -343,6 +345,9 @@ function renderAccountTabs() {
     renderAccountTabs();
     renderEmailList();
   });
+  allTabBtn.addEventListener('dblclick', () => {
+    openGmailInbox('all');
+  });
   accountTabsEl.appendChild(allTabBtn);
 
   // Individual Account Tabs
@@ -361,7 +366,7 @@ function renderAccountTabs() {
     tabBtn.className = `tab-pill ${currentTab === String(idx) ? 'active' : ''} ${isUnauthorized ? 'tab-unauth' : ''}`;
     tabBtn.title = isUnauthorized
       ? `${emailStr || displayName} (საჭიროა Gmail-ის გახსნა)`
-      : `${emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`}`;
+      : `${emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`} (ორმაგი კლიკით ინბოქსში გადასვლა)`;
     tabBtn.innerHTML = `
       <span>u/${idx} ${escapeHtml(displayName)}</span>
       <span class="tab-badge ${isUnauthorized ? 'is-warning' : (count > 0 ? 'has-unread' : '')}">${isUnauthorized ? '🔑' : count}</span>
@@ -371,7 +376,31 @@ function renderAccountTabs() {
       renderAccountTabs();
       renderEmailList();
     });
+    tabBtn.addEventListener('dblclick', () => {
+      openGmailInbox(idx);
+    });
     accountTabsEl.appendChild(tabBtn);
+  }
+
+  // Update dynamic tooltips on Quick Action buttons
+  if (btnOpenInboxEl) {
+    if (currentTab === 'all') {
+      btnOpenInboxEl.title = 'Gmail ინბოქსის გახსნა (I ან G)';
+    } else {
+      btnOpenInboxEl.title = `Gmail u/${currentTab} ინბოქსის გახსნა (I ან G)`;
+    }
+  }
+  if (btnComposeEl) {
+    if (currentTab === 'all') {
+      btnComposeEl.title = 'ახალი წერილის დაწერა (C)';
+    } else {
+      btnComposeEl.title = `ახალი წერილის დაწერა u/${currentTab}-დან (C)`;
+    }
+  }
+  if (brandHeaderEl) {
+    brandHeaderEl.title = currentTab === 'all'
+      ? 'Gmail ინბოქსის გახსნა (Open Inbox)'
+      : `Gmail u/${currentTab} ინბოქსის გახსნა (Open Inbox)`;
   }
 }
 
@@ -441,7 +470,21 @@ function renderEmailList() {
       </svg>
       <div class="empty-title">წაუკითხავი წერილები არ არის</div>
       <div class="empty-subtitle">${searchQuery ? 'ძიების შედეგი ცარიელია' : 'თქვენი შემოსული წერილების ყუთი სუფთაა!'}</div>
+      <button type="button" class="btn-empty-inbox" id="btnEmptyStateInbox" title="Gmail ინბოქსის გახსნა (I ან G)">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
+          <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+        </svg>
+        <span>Gmail ინბოქსის გახსნა</span>
+      </button>
     `;
+    const btnEmpty = emptyState.querySelector('#btnEmptyStateInbox');
+    if (btnEmpty) {
+      btnEmpty.addEventListener('click', (e) => {
+        const forceNew = e.ctrlKey || e.metaKey || e.shiftKey;
+        openGmailInbox(currentTab, forceNew);
+      });
+    }
     emailListEl.appendChild(emptyState);
     return;
   }
@@ -1302,6 +1345,154 @@ function populateSettingsForm() {
 }
 
 /**
+ * Smart Gmail Navigation
+ * If a matching Gmail tab is already open, switches to it and focuses the window.
+ * Otherwise opens a new tab.
+ */
+async function openGmailInbox(accountParam = currentTab, forceNewTab = false) {
+  let targetIdx = 0;
+  if (accountParam !== 'all' && accountParam !== null && accountParam !== undefined) {
+    targetIdx = Number(accountParam) || 0;
+  } else if (appSettings?.accounts?.length) {
+    const firstEnabled = appSettings.accounts.find(a => a.enabled !== false);
+    if (firstEnabled) targetIdx = firstEnabled.index;
+  }
+
+  const accConfig = (appSettings?.accounts || []).find(a => a.index === targetIdx);
+  const targetEmail = accConfig?.email || '';
+  const targetUrl = `https://mail.google.com/mail/u/${targetIdx}/#inbox`;
+
+  try {
+    if (!forceNewTab && chrome.tabs?.query) {
+      const tabs = await chrome.tabs.query({});
+      let matchedTab = tabs.find(t => {
+        if (!t.url) return false;
+        if (!t.url.includes('mail.google.com')) return false;
+
+        // Check for matching account path: /mail/u/{targetIdx}/
+        if (t.url.includes(`/mail/u/${targetIdx}/`) || t.url.endsWith(`/mail/u/${targetIdx}`)) {
+          return true;
+        }
+        // Match by email if query param exists
+        if (targetEmail && (t.url.includes(`authuser=${encodeURIComponent(targetEmail)}`) || t.url.includes(`/u/${encodeURIComponent(targetEmail)}/`))) {
+          return true;
+        }
+        return false;
+      });
+
+      // Fallback for primary u/0
+      if (!matchedTab && targetIdx === 0) {
+        matchedTab = tabs.find(t => t.url && t.url.includes('mail.google.com') && !t.url.match(/\/mail\/u\/[1-9]/));
+      }
+
+      if (matchedTab && matchedTab.id) {
+        await chrome.tabs.update(matchedTab.id, { active: true });
+        if (matchedTab.windowId) {
+          await chrome.windows.update(matchedTab.windowId, { focused: true });
+        }
+        showToast(`✨ Gmail u/${targetIdx} ტაბი გააქტიურდა`);
+        return;
+      }
+    }
+
+    await chrome.tabs.create({ url: targetUrl });
+    showToast(`🚀 Gmail გაიხსნა ახალ ტაბში`);
+  } catch (err) {
+    console.warn('Tab query/focus failed, falling back to tabs.create:', err);
+    chrome.tabs.create({ url: targetUrl });
+  }
+}
+
+/**
+ * Initializes Inbox Navigation buttons and header brand handler
+ */
+function initInboxNavigation() {
+  if (btnOpenInboxEl) {
+    btnOpenInboxEl.addEventListener('click', (e) => {
+      const forceNewTab = e.ctrlKey || e.metaKey || e.shiftKey;
+      openGmailInbox(currentTab, forceNewTab);
+    });
+  }
+
+  if (brandHeaderEl) {
+    brandHeaderEl.addEventListener('click', (e) => {
+      const forceNewTab = e.ctrlKey || e.metaKey || e.shiftKey;
+      openGmailInbox(currentTab, forceNewTab);
+    });
+    brandHeaderEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openGmailInbox(currentTab);
+      }
+    });
+  }
+}
+
+/**
+ * Global Keyboard Shortcuts for Gmail Command Center
+ */
+function initKeyboardShortcuts() {
+  window.addEventListener('keydown', (e) => {
+    // Ignore when typing in inputs or textareas
+    const target = e.target;
+    const isTyping = target && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable
+    );
+
+    // If settings modal is open, let standard modal behavior work
+    if (settingsDialogEl && settingsDialogEl.open) {
+      return;
+    }
+
+    if (isTyping) {
+      if (e.key === 'Escape') {
+        if (filterInputEl && document.activeElement === filterInputEl) {
+          filterInputEl.value = '';
+          searchQuery = '';
+          btnClearFilterEl?.classList.add('hidden');
+          renderEmailList();
+          filterInputEl.blur();
+        }
+      }
+      return;
+    }
+
+    // 'i' or 'g': Open Inbox
+    if (e.key === 'i' || e.key === 'I' || e.key === 'g' || e.key === 'G') {
+      e.preventDefault();
+      const forceNew = e.ctrlKey || e.metaKey || e.shiftKey;
+      openGmailInbox(currentTab, forceNew);
+      return;
+    }
+
+    // 'c' or 'C': Compose new email
+    if (e.key === 'c' || e.key === 'C') {
+      e.preventDefault();
+      btnComposeEl?.click();
+      return;
+    }
+
+    // 'r' or 'R': Refresh
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      btnRefreshEl?.click();
+      return;
+    }
+
+    // '/': Focus Search
+    if (e.key === '/') {
+      e.preventDefault();
+      filterInputEl?.focus();
+      filterInputEl?.select();
+      return;
+    }
+  });
+}
+
+/**
  * Compose Button: opens compose window in active account
  */
 function initComposeButton() {
@@ -1406,7 +1597,9 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   initViewMode();
+  initInboxNavigation();
   initComposeButton();
+  initKeyboardShortcuts();
   initSoundQuickToggle();
   initFilter();
   initMarkAllReadButton();
