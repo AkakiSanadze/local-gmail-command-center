@@ -22,8 +22,9 @@ const DEFAULT_SETTINGS = {
   focusMode: false, // DND
   vipOnly: false,
   vipKeywords: 'urgent, invoice, სასწრაფო, კოდი, verification, გადახდა, security, auth',
-  aiEndpoint: 'http://localhost:1234/v1/chat/completions',
+  aiEndpoint: 'http://127.0.0.1:1234/v1/chat/completions',
   aiModel: 'local-model',
+  aiSummaries: {},
   notifiedIds: [],
   locallyReadIds: [],
   cachedFeeds: {}
@@ -941,6 +942,130 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const settings = await getSettings();
       await setupAlarm(settings.pollInterval);
       sendResponse({ success: true });
+    })();
+    return true;
+  }
+
+  if (message.action === 'GENERATE_AI_SUMMARY') {
+    (async () => {
+      const startMs = Date.now();
+      console.log(`[LM Studio SW] Started summary request for ID: ${message.entryId || 'unknown'}`);
+      try {
+        const settings = await getSettings();
+        const entryId = message.entryId;
+        const aiSummaries = settings.aiSummaries || {};
+
+        if (entryId && aiSummaries[entryId]) {
+          console.log(`[LM Studio SW] Returning cached summary for ${entryId}: "${aiSummaries[entryId]}"`);
+          sendResponse({ success: true, summary: aiSummaries[entryId], cached: true });
+          return;
+        }
+
+        const emailText = message.emailText;
+        const systemPrompt = 'You are a concise email assistant. Summarize the key point of this email in 1 clear, helpful sentence. If in Georgian, reply in Georgian; otherwise in English.';
+
+        let endpoint = (settings.aiEndpoint || 'http://127.0.0.1:1234/v1/chat/completions').trim();
+        const model = (settings.aiModel || 'local-model').trim();
+
+        // Endpoints to attempt with fallback between 127.0.0.1 and localhost
+        const endpointsToTry = [endpoint];
+        if (endpoint.includes('127.0.0.1')) {
+          endpointsToTry.push(endpoint.replace('127.0.0.1', 'localhost'));
+        } else if (endpoint.includes('localhost')) {
+          endpointsToTry.push(endpoint.replace('localhost', '127.0.0.1'));
+        }
+
+        let lastErr = null;
+        let responseData = null;
+
+        for (const ep of endpointsToTry) {
+          try {
+            console.log(`[LM Studio SW] Sending fetch to: ${ep} (model: ${model})`);
+            const res = await fetch(ep, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: model,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: emailText }
+                ],
+                temperature: 0.2,
+                max_tokens: 2048
+              })
+            });
+
+            if (!res.ok) {
+              throw new Error(`HTTP ${res.status}: ${res.statusText || 'Server Error'}`);
+            }
+
+            responseData = await res.json();
+            console.log(`[LM Studio SW] Received response from ${ep} in ${Date.now() - startMs}ms`);
+            break;
+          } catch (err) {
+            lastErr = err;
+            console.warn(`[LM Studio SW] Attempt at ${ep} failed: ${err.message}`);
+          }
+        }
+
+        if (!responseData) {
+          throw lastErr || new Error('Connection failed');
+        }
+
+        const msg = responseData.choices?.[0]?.message;
+        let summary = (msg?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+        // Support reasoning models where thoughts were in reasoning_content
+        if (!summary && msg?.reasoning_content) {
+          console.log('[LM Studio SW] Content empty; extracting from reasoning_content...');
+          const reasoning = msg.reasoning_content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          const lines = reasoning.split('\n').map(l => l.trim()).filter(Boolean);
+          summary = lines[lines.length - 1] || reasoning;
+        }
+
+        if (!summary) {
+          throw new Error('მოდელმა დააბრუნა ცარიელი პასუხი');
+        }
+
+        console.log(`[LM Studio SW] Summary generated in ${Date.now() - startMs}ms: "${summary}"`);
+
+        // Cache summary in storage
+        if (entryId) {
+          aiSummaries[entryId] = summary;
+          await chrome.storage.local.set({ aiSummaries });
+        }
+
+        sendResponse({ success: true, summary });
+      } catch (err) {
+        console.error(`[LM Studio SW] Summary generation failed after ${Date.now() - startMs}ms:`, err);
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'TEST_LM_STUDIO_CONNECTION') {
+    (async () => {
+      try {
+        const settings = await getSettings();
+        let endpoint = (message.endpoint || settings.aiEndpoint || 'http://127.0.0.1:1234/v1/chat/completions').trim();
+        let baseUrl = endpoint.replace(/\/v1\/chat\/completions\/?$/, '');
+        if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
+        const modelsUrl = `${baseUrl}/models`;
+
+        console.log(`[LM Studio SW] Testing connection at: ${modelsUrl}`);
+        const res = await fetch(modelsUrl);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        const data = await res.json();
+        const models = (data.data || []).map(m => m.id);
+        console.log(`[LM Studio SW] Available models:`, models);
+        sendResponse({ success: true, models });
+      } catch (err) {
+        console.error(`[LM Studio SW] Connection test failed:`, err);
+        sendResponse({ success: false, error: err.message });
+      }
     })();
     return true;
   }

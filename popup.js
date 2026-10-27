@@ -48,6 +48,8 @@ const vipKeywordsInputEl = document.getElementById('vipKeywordsInput');
 const btnTestSoundEl = document.getElementById('btnTestSound');
 const aiEndpointInputEl = document.getElementById('aiEndpointInput');
 const aiModelInputEl = document.getElementById('aiModelInput');
+const lmStudioStatusTextEl = document.getElementById('lmStudioStatusText');
+const btnTestLmStudioEl = document.getElementById('btnTestLmStudio');
 
 /**
  * Toast Notification Helper
@@ -210,8 +212,9 @@ async function loadState() {
     focusMode: false,
     vipOnly: false,
     vipKeywords: 'urgent, invoice, სასწრაფო, კოდი, verification, გადახდა, security, auth',
-    aiEndpoint: 'http://localhost:1234/v1/chat/completions',
+    aiEndpoint: 'http://127.0.0.1:1234/v1/chat/completions',
     aiModel: 'local-model',
+    aiSummaries: {},
     locallyReadIds: [],
     cachedFeeds: {},
     lastGlobalCheck: null
@@ -631,6 +634,18 @@ function createEmailCard(entry, isVip) {
     card.appendChild(snippetEl);
   }
 
+  // If this email already has a cached summary, display it directly
+  const existingSummary = appSettings?.aiSummaries?.[entry.id];
+  if (existingSummary) {
+    const summaryBox = document.createElement('div');
+    summaryBox.className = 'ai-summary-box';
+    summaryBox.innerHTML = `
+      <div class="ai-summary-header">✨ LM Studio შეჯამება</div>
+      <div class="ai-summary-text">${escapeHtml(existingSummary)}</div>
+    `;
+    card.appendChild(summaryBox);
+  }
+
   // Card Action Row (Smart OTP + AI Summary + Mark Read + Delete)
   const actionRow = document.createElement('div');
   actionRow.className = 'card-actions';
@@ -662,18 +677,20 @@ function createEmailCard(entry, isVip) {
     actionRow.appendChild(otpBtn);
   }
 
-  // Local AI Summary Button
-  const aiBtn = document.createElement('button');
-  aiBtn.type = 'button';
-  aiBtn.className = 'btn-ai-summary';
-  aiBtn.innerHTML = `<span>✨ AI Summary</span>`;
-  aiBtn.title = 'შეაჯამე წერილი 1 წინადადებით';
+  // Local AI Summary Button (only when not already summarized)
+  if (!existingSummary) {
+    const aiBtn = document.createElement('button');
+    aiBtn.type = 'button';
+    aiBtn.className = 'btn-ai-summary';
+    aiBtn.innerHTML = `<span>✨ AI Summary</span>`;
+    aiBtn.title = 'შეაჯამე წერილი LM Studio-ს მეშვეობით';
 
-  aiBtn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    await generateEmailSummary(entry, card, aiBtn);
-  });
-  actionRow.appendChild(aiBtn);
+    aiBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await generateEmailSummary(entry, card, aiBtn);
+    });
+    actionRow.appendChild(aiBtn);
+  }
 
   // Mark as Read Button in Actions
   const markReadBtn = document.createElement('button');
@@ -1052,70 +1069,58 @@ function initDeleteAllButton() {
  * AI Summary Generation: Direct LM Studio & Localhost LLM Bridge
  */
 async function generateEmailSummary(entry, cardEl, aiBtn) {
-  // If already summarized in this card, don't re-run
-  if (cardEl.querySelector('.ai-summary-box')) {
-    return;
+  aiBtn.classList.add('loading');
+  aiBtn.textContent = '🧠 მუშავდება...';
+
+  // Reuse or create summary container
+  let summaryContainer = cardEl.querySelector('.ai-summary-box');
+  if (!summaryContainer) {
+    summaryContainer = document.createElement('div');
+    summaryContainer.className = 'ai-summary-box';
+    cardEl.appendChild(summaryContainer);
   }
 
-  aiBtn.classList.add('loading');
-  aiBtn.textContent = '✨ მუშავდება...';
-
-  const summaryContainer = document.createElement('div');
-  summaryContainer.className = 'ai-summary-box';
   summaryContainer.innerHTML = `
     <div class="ai-summary-header">✨ LM Studio შეჯამება</div>
-    <div class="ai-summary-text">გენერირდება...</div>
+    <div class="ai-summary-text loading-pulse">🧠 LM Studio ამუშავებს შეჯამებას... (გთხოვთ დაელოდოთ)</div>
   `;
-  cardEl.appendChild(summaryContainer);
   const textEl = summaryContainer.querySelector('.ai-summary-text');
 
   const emailText = `Subject: ${entry.title || ''}\nSender: ${entry.authorName || ''} <${entry.authorEmail || ''}>\nBody: ${entry.summary || ''}`;
-  const systemPrompt = 'You are a concise email assistant. Summarize the key point of this email in 1 clear, helpful sentence. If in Georgian, reply in Georgian; otherwise in English.';
 
-  const endpoint = appSettings?.aiEndpoint || 'http://localhost:1234/v1/chat/completions';
-  const model = appSettings?.aiModel || 'local-model';
+  console.group(`🤖 [LM Studio AI Summary] ${entry.title || '(No Subject)'}`);
+  console.log('Entry ID:', entry.id);
+  console.log('Author:', entry.authorName, entry.authorEmail);
+  console.log('Forwarding request to background service worker...');
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: emailText }
-        ],
-        temperature: 0.3,
-        max_tokens: 500
-      })
+    const res = await chrome.runtime.sendMessage({
+      action: 'GENERATE_AI_SUMMARY',
+      entryId: entry.id,
+      emailText: emailText
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} (${response.statusText || 'Error'})`);
-    }
-
-    const data = await response.json();
-    const msg = data.choices?.[0]?.message;
-    let summary = msg?.content || '';
-
-    // Strip internal reasoning tags if present (<think>...</think> for reasoning models like DeepSeek-R1)
-    summary = summary.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-    // Support reasoning_content for models that separate thoughts
-    if (!summary && msg?.reasoning_content) {
-      summary = msg.reasoning_content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    }
-
-    if (summary) {
-      textEl.textContent = summary;
+    if (res && res.success && res.summary) {
+      console.log('✅ LM Studio response received:', res.summary);
+      textEl.classList.remove('loading-pulse');
+      textEl.textContent = res.summary;
+      if (!appSettings.aiSummaries) appSettings.aiSummaries = {};
+      appSettings.aiSummaries[entry.id] = res.summary;
       aiBtn.remove();
+      showToast('✨ შეჯამება მზადაა!');
     } else {
-      throw new Error('მოდელმა დააბრუნა ცარიელი პასუხი');
+      const errMsg = res?.error || 'უცნობი შეცდომა';
+      throw new Error(errMsg);
     }
   } catch (err) {
-    textEl.textContent = `LM Studio AI შეჯამება ვერ მოხერხდა: ${err.message}. დარწმუნდით, რომ LM Studio-ში Local Server ჩართულია (${endpoint}).`;
+    console.error('❌ LM Studio summary error:', err);
+    textEl.classList.remove('loading-pulse');
+    const endpoint = appSettings?.aiEndpoint || 'http://127.0.0.1:1234/v1/chat/completions';
+    textEl.textContent = `LM Studio შეჯამება ვერ მოხერხდა: ${err.message}. დარწმუნდით, რომ LM Studio-ში Local Server ჩართულია (${endpoint}).`;
     aiBtn.classList.remove('loading');
     aiBtn.textContent = '✨ ხელახლა';
+  } finally {
+    console.groupEnd();
   }
 }
 
@@ -1180,7 +1185,7 @@ function initSettingsModal() {
       focusMode: focusModeToggleEl.checked,
       vipOnly: vipOnlyToggleEl.checked,
       vipKeywords: vipKeywordsInputEl.value.trim(),
-      aiEndpoint: aiEndpointInputEl.value.trim() || 'http://localhost:1234/v1/chat/completions',
+      aiEndpoint: aiEndpointInputEl.value.trim() || 'http://127.0.0.1:1234/v1/chat/completions',
       aiModel: aiModelInputEl.value.trim() || 'local-model'
     };
 
@@ -1234,6 +1239,42 @@ function initSettingsModal() {
       setTimeout(() => { btnTestSoundEl.disabled = false; }, 800);
     }
   });
+
+  // Test LM Studio Connection Button inside Settings
+  if (btnTestLmStudioEl) {
+    btnTestLmStudioEl.addEventListener('click', async () => {
+      btnTestLmStudioEl.disabled = true;
+      if (lmStudioStatusTextEl) {
+        lmStudioStatusTextEl.textContent = 'მოწმდება კავშირი...';
+        lmStudioStatusTextEl.style.color = 'var(--text-muted)';
+      }
+      try {
+        const endpoint = aiEndpointInputEl?.value?.trim() || 'http://127.0.0.1:1234/v1/chat/completions';
+        const res = await chrome.runtime.sendMessage({
+          action: 'TEST_LM_STUDIO_CONNECTION',
+          endpoint: endpoint
+        });
+        if (res && res.success) {
+          const modelList = res.models?.length ? res.models.join(', ') : 'მოდელი ჩატვირთულია';
+          if (lmStudioStatusTextEl) {
+            lmStudioStatusTextEl.textContent = `✅ დაკავშირებულია! (${modelList})`;
+            lmStudioStatusTextEl.style.color = 'var(--accent-green, #10b981)';
+          }
+          showToast('✅ LM Studio-სთან კავშირი დამყარდა!');
+        } else {
+          throw new Error(res?.error || 'კავშირი ვერ დამყარდა');
+        }
+      } catch (err) {
+        if (lmStudioStatusTextEl) {
+          lmStudioStatusTextEl.textContent = `❌ შეცდომა: ${err.message}`;
+          lmStudioStatusTextEl.style.color = 'var(--accent-red, #d93025)';
+        }
+        showToast('❌ LM Studio მიუწვდომელია');
+      } finally {
+        setTimeout(() => { btnTestLmStudioEl.disabled = false; }, 600);
+      }
+    });
+  }
 }
 
 function createAccountSettingRow(acc) {
@@ -1320,8 +1361,12 @@ function populateSettingsForm() {
   focusModeToggleEl.checked = Boolean(appSettings.focusMode);
   vipOnlyToggleEl.checked = Boolean(appSettings.vipOnly);
   vipKeywordsInputEl.value = appSettings.vipKeywords || '';
-  aiEndpointInputEl.value = appSettings.aiEndpoint || 'http://localhost:1234/v1/chat/completions';
+  aiEndpointInputEl.value = appSettings.aiEndpoint || 'http://127.0.0.1:1234/v1/chat/completions';
   aiModelInputEl.value = appSettings.aiModel || 'local-model';
+  if (lmStudioStatusTextEl) {
+    lmStudioStatusTextEl.textContent = 'კავშირი: შეუმოწმებელი';
+    lmStudioStatusTextEl.style.color = 'var(--text-muted)';
+  }
 }
 
 /**
