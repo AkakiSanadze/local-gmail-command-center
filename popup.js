@@ -1006,69 +1006,6 @@ function initDeleteAllButton() {
 }
 
 /**
- * Bulk Delete All emails button handler (moves all displayed emails to Trash in real Gmail)
- */
-function initDeleteAllButton() {
-  const btn = document.getElementById('btnDeleteAll');
-  if (!btn) return;
-
-  btn.addEventListener('click', async () => {
-    let emailsToDelete = [];
-    if (currentTab === 'all') {
-      emailsToDelete = allEmails;
-    } else {
-      const targetIdx = Number(currentTab);
-      emailsToDelete = allEmails.filter(e => e.accountIndex === targetIdx);
-    }
-
-    if (emailsToDelete.length === 0) {
-      showToast('წასაშლელი წერილები არ არის');
-      return;
-    }
-
-    const count = emailsToDelete.length;
-    const ids = emailsToDelete.map(e => e.id);
-    const items = emailsToDelete.map(e => ({
-      id: e.id,
-      messageId: e.messageId,
-      link: e.link,
-      accountIndex: e.accountIndex
-    }));
-
-    // Visual animation for all cards
-    const cards = emailListEl.querySelectorAll('.email-card');
-    cards.forEach(c => c.classList.add('fade-out-read'));
-
-    if (!appSettings.locallyReadIds) {
-      appSettings.locallyReadIds = [];
-    }
-    ids.forEach(id => {
-      if (!appSettings.locallyReadIds.includes(id)) {
-        appSettings.locallyReadIds.push(id);
-      }
-    });
-
-    try {
-      await chrome.runtime.sendMessage({
-        action: 'DELETE_ALL_EMAILS',
-        ids: ids,
-        items: items
-      });
-    } catch (err) {
-      console.warn('Delete all emails notice:', err);
-    }
-
-    setTimeout(() => {
-      processCachedEmails();
-      renderAccountTabs();
-      renderEmailList();
-    }, 220);
-
-    showToast(`🗑️ ყველა წერილი (${count}) გადატანილია სანაგვეში`);
-  });
-}
-
-/**
  * AI Summary Generation: Prompt API (Gemini Nano) -> Localhost LLM Fallback
  */
 async function generateEmailSummary(entry, cardEl, aiBtn) {
