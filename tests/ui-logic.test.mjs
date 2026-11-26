@@ -134,7 +134,7 @@ test('resolveActiveAccountIndex selects first enabled account when u/0 is disabl
 });
 
 test('normalizeAccountRows preserves emails and applies manuallyDisabled properly', () => {
-  const existing = [{ index: 0, email: 'akaki@gmail.com', name: 'akaki', enabled: true }];
+  const existing = [{ index: 0, email: 'user@gmail.com', name: 'user', enabled: true }];
   const normalized = normalizeAccountRows(
     [
       { index: 0, enabled: true, inputValue: 'My Personal' },
@@ -146,7 +146,7 @@ test('normalizeAccountRows preserves emails and applies manuallyDisabled properl
   assert.deepEqual(normalized, [
     {
       index: 0,
-      email: 'akaki@gmail.com',
+      email: 'user@gmail.com',
       name: 'My Personal',
       enabled: true,
       manuallyDisabled: false

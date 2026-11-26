@@ -167,7 +167,7 @@ test('Chrome mode uses offscreen document for Atom parsing and audio; Firefox mo
 
 test('Notification links survive MV3 Service Worker restart via session storage', async () => {
   const xml = makeAtomFeedXml({
-    email: 'akaki@gmail.com',
+    email: 'user2@gmail.com',
     fullcount: 1,
     entries: [
       {
