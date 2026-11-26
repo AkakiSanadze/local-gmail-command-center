@@ -26,29 +26,30 @@
 
 ---
 
-## 🛠️ აწყობა და ინსტალაცია (Build & Load)
+## 🛠️ ინსტალაცია (გადმოწერა და პირდაპირ ჩატვირთვა)
 
-პროექტს არ სჭირდება `npm install` (ნულოვანი გარე დამოკიდებულება). საჭიროა მხოლოდ Node.js (v20+).
+`dist/chrome/` და `dist/firefox/` ფოლდერები უკვე აწყობილია რეპოზიტორიაში — **ინსტალაციისთვის `npm run build`-ის გაშვება არ გჭირდებათ**.
 
-### 1. ექსტენშენის აწყობა
+### 1. Google Chrome-ში ჩატვირთვა
+1. გახსენით `chrome://extensions/`
+2. ჩართეთ **Developer mode**
+3. დააჭირეთ **Load unpacked** და აირჩიეთ **`dist/chrome/`** ფოლდერი.
+
+### 2. Mozilla Firefox-ში ჩატვირთვა
+1. გახსენით `about:debugging#/runtime/this-firefox`
+2. დააჭირეთ **Load Temporary Add-on...**
+3. აირჩიეთ **`dist/firefox/manifest.json`**.
+
+### 3. დეველოპმენტი (მხოლოდ `src/`-ში ცვლილებების შემდეგ)
+პროექტს არ სჭირდება `npm install` (ნულოვანი გარე დამოკიდებულება). `src/` ან `manifests/` ფაილების შეცვლის შემდეგ განაახლეთ `dist/` ფოლდერი:
 
 ```bash
-# Chrome (dist/chrome/) და Firefox (dist/firefox/) ვერსიების აწყობა
+# Chrome (dist/chrome/) და Firefox (dist/firefox/) ვერსიების განახლება
 npm run build
 
 # .zip (Chrome) და .xpi (Firefox) არქივების შექმნა dist/ ფოლდერში
 npm run pack
 ```
-
-### 2. Google Chrome-ში ჩატვირთვა
-1. გახსენით `chrome://extensions/`
-2. ჩართეთ **Developer mode**
-3. დააჭირეთ **Load unpacked** და აირჩიეთ `dist/chrome/` ფოლდერი.
-
-### 3. Mozilla Firefox-ში ჩატვირთვა
-1. გახსენით `about:debugging#/runtime/this-firefox`
-2. დააჭირეთ **Load Temporary Add-on...**
-3. აირჩიეთ `dist/firefox/manifest.json`.
 
 ---
 
