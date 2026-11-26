@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_VENICE_MODEL
 } from './shared/config.js';
+import { extractAndSanitizeEmailHtml } from './shared/email-parser.js';
 import {
   aggregateEmails,
   computeAccountDisplayCounts,
@@ -39,8 +40,14 @@ let cachedFeedData = {};
 let allEmails = [];
 let searchQuery = '';
 let hasGmailPermission = true;
+let activeReaderEntry = null;
+let activeReaderUnsubscribe = null;
+let activeReaderPlainText = '';
+let readerRequestSeq = 0;
 
 // DOM Elements
+const contentAreaEl = document.querySelector('.content-area');
+const filterBarEl = document.querySelector('.filter-bar');
 const statusDotEl = document.getElementById('statusDot');
 const lastSyncTimeEl = document.getElementById('lastSyncTime');
 const brandHeaderEl = document.getElementById('brandHeader');
@@ -62,6 +69,18 @@ const btnMarkAllReadEl = document.getElementById('btnMarkAllRead');
 const btnDeleteAllEl = document.getElementById('btnDeleteAll');
 const btnDeleteAllLabelEl = document.getElementById('btnDeleteAllLabel');
 const emailListEl = document.getElementById('emailList');
+const emailReaderEl = document.getElementById('emailReader');
+const btnReaderBackEl = document.getElementById('btnReaderBack');
+const btnReaderReadEl = document.getElementById('btnReaderRead');
+const btnReaderSpamEl = document.getElementById('btnReaderSpam');
+const btnReaderDeleteEl = document.getElementById('btnReaderDelete');
+const btnReaderOpenGmailEl = document.getElementById('btnReaderOpenGmail');
+const readerUnsubBarEl = document.getElementById('readerUnsubBar');
+const readerUnsubLabelEl = document.getElementById('readerUnsubLabel');
+const btnReaderUnsubEl = document.getElementById('btnReaderUnsub');
+const readerHeaderEl = document.getElementById('readerHeader');
+const readerExtrasEl = document.getElementById('readerExtras');
+const readerBodyEl = document.getElementById('readerBody');
 const authBannerEl = document.getElementById('authBanner');
 const authBannerTitleEl = document.getElementById('authBannerTitle');
 const authAccountMsgEl = document.getElementById('authAccountMsg');
@@ -78,6 +97,7 @@ const btnAddAccountRowEl = document.getElementById('btnAddAccountRow');
 const pollIntervalInputEl = document.getElementById('pollIntervalInput');
 const focusModeToggleEl = document.getElementById('focusModeToggle');
 const vipOnlyToggleEl = document.getElementById('vipOnlyToggle');
+const autoMarkReadToggleEl = document.getElementById('autoMarkReadToggle');
 const vipKeywordsInputEl = document.getElementById('vipKeywordsInput');
 const btnTestSoundEl = document.getElementById('btnTestSound');
 const aiProviderSelectEl = document.getElementById('aiProviderSelect');
@@ -342,6 +362,7 @@ function renderAccountTabs() {
     <span class="tab-badge ${allCount > 0 ? 'has-unread' : ''}">${allCount}</span>
   `;
   allTabBtn.addEventListener('click', () => {
+    closeEmailReader();
     currentTab = 'all';
     clearDeleteAllConfirmation();
     renderAccountTabs();
@@ -376,6 +397,7 @@ function renderAccountTabs() {
       }</span>
     `;
     tabBtn.addEventListener('click', () => {
+      closeEmailReader();
       currentTab = String(idx);
       clearDeleteAllConfirmation();
       renderAccountTabs();
@@ -545,6 +567,57 @@ async function openAndMarkEmail(entry, cardEl) {
 }
 
 /**
+ * Creates a reusable OTP copy button for both Email Cards and Reader View.
+ */
+function createOtpCopyButton(otpCode) {
+  const otpBtn = document.createElement('button');
+  otpBtn.type = 'button';
+  otpBtn.className = 'btn-otp-copy';
+  otpBtn.innerHTML = `<span>📋 კოდი: <strong>${escapeHtml(otpCode)}</strong></span>`;
+  otpBtn.title = 'დააჭირეთ კოდის დასაკოპირებლად';
+
+  otpBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(otpCode);
+      otpBtn.classList.add('copied');
+      otpBtn.innerHTML = `<span>✅ დაკოპირდა: <strong>${escapeHtml(otpCode)}</strong></span>`;
+      showToast(`კოდი ${otpCode} დაკოპირდა!`);
+      setTimeout(() => {
+        otpBtn.classList.remove('copied');
+        otpBtn.innerHTML = `<span>📋 კოდი: <strong>${escapeHtml(otpCode)}</strong></span>`;
+      }, 2200);
+    } catch (_) {
+      showToast('კოპირება ვერ მოხერხდა');
+    }
+  });
+
+  return otpBtn;
+}
+
+/**
+ * Creates a reusable AI Summary trigger button for both Email Cards and Reader View.
+ */
+function createAiSummaryButton(entry, containerEl, getBodyText = null) {
+  const aiBtn = document.createElement('button');
+  aiBtn.type = 'button';
+  aiBtn.className = 'btn-ai-summary';
+  aiBtn.innerHTML = '<span>✨ AI Summary</span>';
+  aiBtn.title =
+    appSettings?.aiProvider === 'venice'
+      ? 'შეაჯამე წერილი Venice AI-ს მეშვეობით'
+      : 'შეაჯამე წერილი LM Studio-ს მეშვეობით';
+
+  aiBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    const customBody = typeof getBodyText === 'function' ? getBodyText() : null;
+    await generateEmailSummary(entry, containerEl, aiBtn, customBody);
+  });
+
+  return aiBtn;
+}
+
+/**
  * Builds Bento Card DOM element for an email
  */
 function createEmailCard(entry, isVip) {
@@ -554,14 +627,14 @@ function createEmailCard(entry, isVip) {
   card.setAttribute('role', 'button');
 
   card.addEventListener('click', () => {
-    openAndMarkEmail(entry, card);
+    openEmailReader(entry);
   });
 
   card.addEventListener('keydown', e => {
     if (e.target !== card) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      openAndMarkEmail(entry, card);
+      openEmailReader(entry);
     }
   });
 
@@ -608,6 +681,24 @@ function createEmailCard(entry, isVip) {
   });
   metaRightGroup.appendChild(btnQuickRead);
 
+  const btnQuickSpam = document.createElement('button');
+  btnQuickSpam.type = 'button';
+  btnQuickSpam.className = 'btn-quick-spam';
+  btnQuickSpam.title = 'სპამში გაგზავნა (Report Spam)';
+  btnQuickSpam.setAttribute('aria-label', 'სპამში გაგზავნა');
+  btnQuickSpam.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></polygon>
+      <line x1="12" y1="8" x2="12" y2="12"></line>
+      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+    </svg>
+  `;
+  btnQuickSpam.addEventListener('click', e => {
+    e.stopPropagation();
+    handleSingleEmailAction(entry, card, 'spam', true);
+  });
+  metaRightGroup.appendChild(btnQuickSpam);
+
   const btnQuickDelete = document.createElement('button');
   btnQuickDelete.type = 'button';
   btnQuickDelete.className = 'btn-quick-delete';
@@ -624,6 +715,24 @@ function createEmailCard(entry, isVip) {
     handleSingleEmailAction(entry, card, 'delete', true);
   });
   metaRightGroup.appendChild(btnQuickDelete);
+
+  const btnQuickOpen = document.createElement('button');
+  btnQuickOpen.type = 'button';
+  btnQuickOpen.className = 'btn-quick-open';
+  btnQuickOpen.title = 'გახსნა Gmail-ში (Open in Gmail)';
+  btnQuickOpen.setAttribute('aria-label', 'გახსნა Gmail-ში');
+  btnQuickOpen.innerHTML = `
+    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+      <polyline points="15 3 21 3 21 9"></polyline>
+      <line x1="10" y1="14" x2="21" y2="3"></line>
+    </svg>
+  `;
+  btnQuickOpen.addEventListener('click', e => {
+    e.stopPropagation();
+    openAndMarkEmail(entry, card);
+  });
+  metaRightGroup.appendChild(btnQuickOpen);
 
   topMeta.appendChild(tagsGroup);
   topMeta.appendChild(metaRightGroup);
@@ -686,52 +795,256 @@ function createEmailCard(entry, isVip) {
     actionRow.className = 'card-actions';
 
     if (entry.otpCode) {
-      const otpBtn = document.createElement('button');
-      otpBtn.type = 'button';
-      otpBtn.className = 'btn-otp-copy';
-      otpBtn.innerHTML = `<span>📋 კოდი: <strong>${escapeHtml(entry.otpCode)}</strong></span>`;
-      otpBtn.title = 'დააჭირეთ კოდის დასაკოპირებლად';
-
-      otpBtn.addEventListener('click', async e => {
-        e.stopPropagation();
-        try {
-          await navigator.clipboard.writeText(entry.otpCode);
-          otpBtn.classList.add('copied');
-          otpBtn.innerHTML = `<span>✅ დაკოპირდა: <strong>${escapeHtml(entry.otpCode)}</strong></span>`;
-          showToast(`კოდი ${entry.otpCode} დაკოპირდა!`);
-          setTimeout(() => {
-            otpBtn.classList.remove('copied');
-            otpBtn.innerHTML = `<span>📋 კოდი: <strong>${escapeHtml(entry.otpCode)}</strong></span>`;
-          }, 2200);
-        } catch (_) {
-          showToast('კოპირება ვერ მოხერხდა');
-        }
-      });
-
-      actionRow.appendChild(otpBtn);
+      actionRow.appendChild(createOtpCopyButton(entry.otpCode));
     }
 
     if (!existingSummary) {
-      const aiBtn = document.createElement('button');
-      aiBtn.type = 'button';
-      aiBtn.className = 'btn-ai-summary';
-      aiBtn.innerHTML = '<span>✨ AI Summary</span>';
-      aiBtn.title =
-        appSettings?.aiProvider === 'venice'
-          ? 'შეაჯამე წერილი Venice AI-ს მეშვეობით'
-          : 'შეაჯამე წერილი LM Studio-ს მეშვეობით';
-
-      aiBtn.addEventListener('click', async e => {
-        e.stopPropagation();
-        await generateEmailSummary(entry, card, aiBtn);
-      });
-      actionRow.appendChild(aiBtn);
+      actionRow.appendChild(createAiSummaryButton(entry, card));
     }
 
     card.appendChild(actionRow);
   }
 
   return card;
+}
+
+/**
+ * Opens an email inside the In-App Reader View without leaving the extension.
+ */
+async function openEmailReader(entry) {
+  if (!emailReaderEl) return;
+
+  const seq = ++readerRequestSeq;
+  activeReaderEntry = entry;
+  activeReaderUnsubscribe = null;
+  activeReaderPlainText = '';
+
+  filterBarEl?.classList.add('hidden');
+  emailListEl?.classList.add('hidden');
+  emailReaderEl.classList.remove('hidden');
+  if (contentAreaEl) contentAreaEl.scrollTop = 0;
+
+  readerUnsubBarEl?.classList.add('hidden');
+  if (btnReaderUnsubEl) {
+    btnReaderUnsubEl.disabled = false;
+    btnReaderUnsubEl.classList.remove('done');
+    btnReaderUnsubEl.textContent = '🔕 Unsubscribe';
+  }
+  if (btnReaderReadEl) btnReaderReadEl.disabled = false;
+  if (btnReaderSpamEl) btnReaderSpamEl.disabled = false;
+  if (btnReaderDeleteEl) btnReaderDeleteEl.disabled = false;
+
+  // Render Reader Header
+  const isVip = isVipEmail(entry, parseVipKeywords(appSettings?.vipKeywords));
+  const initialChar = (entry.authorName || entry.authorEmail || 'G').charAt(0).toUpperCase();
+  readerHeaderEl.innerHTML = `
+    <div class="reader-meta-row">
+      <div class="tags-group">
+        <span class="account-tag">u/${entry.accountIndex} ${escapeHtml(entry.accountName || '')}</span>
+        ${isVip ? '<span class="vip-tag"><span>★</span><span>VIP</span></span>' : ''}
+      </div>
+      <span class="card-time">${escapeHtml(formatRelativeTime(entry.issued))}</span>
+    </div>
+    <h2 class="reader-subject">${escapeHtml(entry.title || '(უსათაურო)')}</h2>
+    <div class="reader-sender-row">
+      <div class="sender-avatar">${escapeHtml(initialChar)}</div>
+      <div class="sender-info">
+        <span class="sender-name">${escapeHtml(entry.authorName || 'უცნობი გამომგზავნი')}</span>
+        <span class="sender-email">${escapeHtml(entry.authorEmail || '')}</span>
+      </div>
+    </div>
+  `;
+
+  // Render Reader Extras (OTP & AI Summary)
+  readerExtrasEl.innerHTML = '';
+  const existingSummary = appSettings?.aiSummaries?.[entry.id];
+  if (entry.otpCode) {
+    readerExtrasEl.appendChild(createOtpCopyButton(entry.otpCode));
+  }
+  if (existingSummary) {
+    const summaryBox = document.createElement('div');
+    summaryBox.className = 'ai-summary-box';
+    summaryBox.innerHTML = `
+      <div class="ai-summary-header">✨ AI შეჯამება</div>
+      <div class="ai-summary-text">${escapeHtml(existingSummary)}</div>
+    `;
+    readerExtrasEl.appendChild(summaryBox);
+  } else {
+    readerExtrasEl.appendChild(
+      createAiSummaryButton(entry, readerExtrasEl, () => activeReaderPlainText || entry.summary || '')
+    );
+  }
+  readerExtrasEl.classList.toggle('hidden', readerExtrasEl.children.length === 0);
+
+  // Loading state for body
+  readerBodyEl.innerHTML = `
+    <div class="loading-state">
+      <div class="spinner"></div>
+      <span>წერილი იტვირთება...</span>
+    </div>
+  `;
+
+  // Optional auto-mark-read on preview
+  if (appSettings?.autoMarkReadOnPreview) {
+    api.runtime
+      .sendMessage({
+        action: 'MARK_EMAIL_READ',
+        id: entry.id,
+        messageId: entry.messageId,
+        link: entry.link,
+        accountIndex: entry.accountIndex
+      })
+      .then(res => {
+        if (res?.serverSynced) {
+          recordLocalRemoval([entry.id], entry.messageId ? [entry.messageId] : []);
+          processCachedEmails();
+          renderAccountTabs();
+        }
+      })
+      .catch(err => console.warn('Auto mark-read on preview notice:', err));
+  }
+
+  try {
+    const res = await api.runtime.sendMessage({
+      action: 'FETCH_EMAIL_DETAIL',
+      id: entry.id,
+      messageId: entry.messageId,
+      link: entry.link,
+      accountIndex: entry.accountIndex
+    });
+
+    if (seq !== readerRequestSeq || !activeReaderEntry) return;
+
+    if (res?.success && res.rawHtml) {
+      const parsed = extractAndSanitizeEmailHtml(res.rawHtml, DOMParser);
+      activeReaderPlainText = parsed.plainText || entry.summary || '';
+
+      if (parsed.html) {
+        readerBodyEl.innerHTML = parsed.html;
+      } else {
+        readerBodyEl.innerHTML = `<p class="reader-fallback-text">${escapeHtml(
+          entry.summary || '(წერილის შიგთავსი ცარიელია)'
+        )}</p>`;
+      }
+
+      const detectedUnsub = res.unsubscribe || parsed.bodyUnsubscribe || null;
+      activeReaderUnsubscribe = detectedUnsub;
+      if (detectedUnsub && readerUnsubBarEl && readerUnsubLabelEl) {
+        readerUnsubLabelEl.textContent =
+          detectedUnsub.type === 'one-click'
+            ? '⚡ 1-Click Unsubscribe ხელმისაწვდომია'
+            : detectedUnsub.type === 'mailto'
+              ? '✉️ Unsubscribe (Gmail Compose-ით)'
+              : '🔗 Unsubscribe ლინკი ნაპოვნია';
+        readerUnsubBarEl.classList.remove('hidden');
+      }
+      return;
+    }
+
+    renderReaderFallback(entry, res?.authRequired ? 'საჭიროა Gmail სესიის განახლება' : res?.error);
+  } catch (err) {
+    if (seq !== readerRequestSeq || !activeReaderEntry) return;
+    renderReaderFallback(entry, err?.message);
+  }
+}
+
+function renderReaderFallback(entry, reason = '') {
+  if (!readerBodyEl) return;
+  const note = reason
+    ? `სრული ვერსია ვერ ჩაიტვირთა (${escapeHtml(reason)}). ნაჩვენებია მოკლე აღწერა:`
+    : 'სრული ვერსია ვერ ჩაიტვირთა. ნაჩვენებია მოკლე აღწერა:';
+
+  readerBodyEl.innerHTML = `
+    <div class="reader-fallback-notice">${note}</div>
+    <p class="reader-fallback-text">${escapeHtml(entry.summary || '(ტექსტი არ არის)')}</p>
+    <button type="button" class="btn-empty-inbox" id="btnReaderFallbackGmail">
+      <span>↗ წერილის გახსნა Gmail-ში</span>
+    </button>
+  `;
+  const btnFallback = readerBodyEl.querySelector('#btnReaderFallbackGmail');
+  btnFallback?.addEventListener('click', () => {
+    if (entry.link) api.tabs.create({ url: entry.link });
+  });
+}
+
+function closeEmailReader() {
+  readerRequestSeq++;
+  if (!activeReaderEntry && emailReaderEl?.classList.contains('hidden')) {
+    return;
+  }
+  activeReaderEntry = null;
+  activeReaderUnsubscribe = null;
+  activeReaderPlainText = '';
+
+  emailReaderEl?.classList.add('hidden');
+  filterBarEl?.classList.remove('hidden');
+  emailListEl?.classList.remove('hidden');
+
+  if (appSettings) {
+    processCachedEmails();
+    renderAccountTabs();
+    renderEmailList();
+  }
+}
+
+function initReaderView() {
+  btnReaderBackEl?.addEventListener('click', closeEmailReader);
+
+  const handleReaderServerAction = async (btn, mode) => {
+    if (!activeReaderEntry) return;
+    const targetEntry = activeReaderEntry;
+    if (btn) btn.disabled = true;
+    const synced = await handleSingleEmailAction(targetEntry, null, mode, true);
+    if (btn) btn.disabled = false;
+    if (synced && activeReaderEntry?.id === targetEntry.id) {
+      closeEmailReader();
+    }
+  };
+
+  btnReaderReadEl?.addEventListener('click', () => handleReaderServerAction(btnReaderReadEl, 'read'));
+  btnReaderSpamEl?.addEventListener('click', () => handleReaderServerAction(btnReaderSpamEl, 'spam'));
+  btnReaderDeleteEl?.addEventListener('click', () => handleReaderServerAction(btnReaderDeleteEl, 'delete'));
+
+  btnReaderOpenGmailEl?.addEventListener('click', () => {
+    if (activeReaderEntry?.link) {
+      api.tabs.create({ url: activeReaderEntry.link });
+    }
+  });
+
+  btnReaderUnsubEl?.addEventListener('click', async () => {
+    if (!activeReaderEntry || !activeReaderUnsubscribe) return;
+    btnReaderUnsubEl.disabled = true;
+    btnReaderUnsubEl.textContent = '⏳ მუშავდება...';
+
+    try {
+      const res = await api.runtime.sendMessage({
+        action: 'UNSUBSCRIBE_EMAIL',
+        unsubscribe: activeReaderUnsubscribe,
+        accountIndex: activeReaderEntry.accountIndex
+      });
+
+      if (res?.success) {
+        if (res.method === 'one-click') {
+          btnReaderUnsubEl.classList.add('done');
+          btnReaderUnsubEl.textContent = '✓ გაუქმებულია';
+          showToast('✅ გამოწერა გაუქმებულია (1-Click)');
+          return;
+        }
+        if (res.method === 'mailto_compose') {
+          showToast('✉️ Gmail Compose გაიხსნა გამოწერის გასაუქმებლად');
+        } else {
+          showToast('🔗 Unsubscribe გვერდი გაიხსნა ახალ ტაბში');
+        }
+      } else {
+        showToast('⚠️ Unsubscribe ვერ მოხერხდა');
+      }
+    } catch (_) {
+      showToast('⚠️ Unsubscribe ვერ მოხერხდა');
+    }
+
+    btnReaderUnsubEl.disabled = false;
+    btnReaderUnsubEl.textContent = '🔕 Unsubscribe';
+  });
 }
 
 function recordLocalRemoval(ids = [], messageIds = []) {
@@ -750,11 +1063,27 @@ function recordLocalRemoval(ids = [], messageIds = []) {
 }
 
 /**
- * Unified single-email server action ('read' | 'delete')
+ * Unified single-email server action ('read' | 'spam' | 'delete')
  */
 async function handleSingleEmailAction(entry, cardEl, mode, showNotification = true) {
-  const action = mode === 'delete' ? 'DELETE_EMAIL' : 'MARK_EMAIL_READ';
-  cardEl.classList.add('fade-out-read');
+  const ACTION_MAP = {
+    delete: 'DELETE_EMAIL',
+    spam: 'REPORT_SPAM',
+    read: 'MARK_EMAIL_READ'
+  };
+  const SUCCESS_TOASTS = {
+    delete: '🗑️ წერილი გადატანილია სანაგვეში',
+    spam: '🚫 წერილი გადატანილია სპამში',
+    read: '✓ წერილი მონიშნულია წაკითხულად'
+  };
+  const ERROR_TOASTS = {
+    delete: '⚠️ Gmail-იდან წაშლა ვერ მოხერხდა (სცადეთ თავიდან)',
+    spam: '⚠️ სპამში გაგზავნა ვერ მოხერხდა (სცადეთ თავიდან)',
+    read: '⚠️ Gmail სესია გასაახლებელია (სცადეთ თავიდან)'
+  };
+
+  const action = ACTION_MAP[mode] || 'MARK_EMAIL_READ';
+  cardEl?.classList.add('fade-out-read');
 
   let serverSynced = false;
   let needsPreauth = false;
@@ -778,34 +1107,36 @@ async function handleSingleEmailAction(entry, cardEl, mode, showNotification = t
   if (serverSynced) {
     recordLocalRemoval([entry.id], entry.messageId ? [entry.messageId] : []);
 
-    setTimeout(() => {
-      cardEl.remove();
+    if (cardEl) {
+      setTimeout(() => {
+        cardEl.remove();
+        processCachedEmails();
+        renderAccountTabs();
+        if (emailListEl.querySelectorAll('.email-card').length === 0) {
+          renderEmailList();
+        }
+      }, 220);
+    } else {
       processCachedEmails();
       renderAccountTabs();
-      if (emailListEl.querySelectorAll('.email-card').length === 0) {
-        renderEmailList();
-      }
-    }, 220);
+      renderEmailList();
+    }
 
     if (showNotification) {
-      showToast(
-        mode === 'delete' ? '🗑️ წერილი გადატანილია სანაგვეში' : '✓ წერილი მონიშნულია წაკითხულად'
-      );
+      showToast(SUCCESS_TOASTS[mode] || SUCCESS_TOASTS.read);
     }
-  } else {
-    cardEl.classList.remove('fade-out-read');
-    if (showNotification) {
-      if (needsPreauth) {
-        showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
-      } else {
-        showToast(
-          mode === 'delete'
-            ? '⚠️ Gmail-იდან წაშლა ვერ მოხერხდა (სცადეთ თავიდან)'
-            : '⚠️ Gmail სესია გასაახლებელია (სცადეთ თავიდან)'
-        );
-      }
+    return true;
+  }
+
+  cardEl?.classList.remove('fade-out-read');
+  if (showNotification) {
+    if (needsPreauth) {
+      showToast('⚠️ Gmail-ის სესია დასადასტურებელია გახსნილ ტაბში');
+    } else {
+      showToast(ERROR_TOASTS[mode] || ERROR_TOASTS.read);
     }
   }
+  return false;
 }
 
 /**
@@ -909,7 +1240,7 @@ function initBulkActionButtons() {
 /**
  * AI Summary Generation (LM Studio or Venice AI)
  */
-async function generateEmailSummary(entry, cardEl, aiBtn) {
+async function generateEmailSummary(entry, cardEl, aiBtn, customBodyText = null) {
   aiBtn.classList.add('loading');
   aiBtn.textContent = '🧠 მუშავდება...';
 
@@ -929,9 +1260,10 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
   `;
   const textEl = summaryContainer.querySelector('.ai-summary-text');
 
+  const rawBody = (customBodyText || entry.summary || '').slice(0, 4000);
   const emailText = `Subject: ${entry.title || ''}\nSender: ${entry.authorName || ''} <${
     entry.authorEmail || ''
-  }>\nBody: ${entry.summary || ''}`;
+  }>\nBody: ${rawBody}`;
 
   try {
     const res = await api.runtime.sendMessage({
@@ -1008,6 +1340,7 @@ function initSettingsModal() {
       pollInterval: Number(pollIntervalInputEl.value) || 1,
       focusMode: focusModeToggleEl.checked,
       vipOnly: vipOnlyToggleEl.checked,
+      autoMarkReadOnPreview: Boolean(autoMarkReadToggleEl?.checked),
       vipKeywords: vipKeywordsInputEl.value.trim(),
       aiProvider: aiProviderSelectEl?.value || DEFAULT_AI_PROVIDER,
       aiEndpoint: aiEndpointInputEl.value.trim() || DEFAULT_AI_ENDPOINT,
@@ -1207,6 +1540,9 @@ function populateSettingsForm() {
   pollIntervalInputEl.value = String(appSettings.pollInterval || 1);
   focusModeToggleEl.checked = Boolean(appSettings.focusMode);
   vipOnlyToggleEl.checked = Boolean(appSettings.vipOnly);
+  if (autoMarkReadToggleEl) {
+    autoMarkReadToggleEl.checked = Boolean(appSettings.autoMarkReadOnPreview);
+  }
   vipKeywordsInputEl.value = appSettings.vipKeywords || '';
   const activeProvider = appSettings.aiProvider || DEFAULT_AI_PROVIDER;
   if (aiProviderSelectEl) aiProviderSelectEl.value = activeProvider;
@@ -1325,6 +1661,12 @@ function initKeyboardShortcuts() {
       return;
     }
 
+    if (e.key === 'Escape' && activeReaderEntry && !isTyping) {
+      e.preventDefault();
+      closeEmailReader();
+      return;
+    }
+
     if (isTyping) {
       if (e.key === 'Escape' && filterInputEl && document.activeElement === filterInputEl) {
         filterInputEl.value = '';
@@ -1367,6 +1709,7 @@ function initKeyboardShortcuts() {
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
       if (e.key === '0') {
         e.preventDefault();
+        closeEmailReader();
         currentTab = 'all';
         clearDeleteAllConfirmation();
         renderAccountTabs();
@@ -1377,6 +1720,7 @@ function initKeyboardShortcuts() {
         const idx = visibleAccountIndices[Number(e.key) - 1];
         if (idx !== undefined) {
           e.preventDefault();
+          closeEmailReader();
           currentTab = String(idx);
           clearDeleteAllConfirmation();
           renderAccountTabs();
@@ -1464,6 +1808,7 @@ api.storage.onChanged.addListener((changes, areaName) => {
     'locallyReadIds',
     'soundEnabled',
     'focusMode',
+    'autoMarkReadOnPreview',
     'aiSummaries',
     'theme'
   ];
@@ -1483,6 +1828,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSoundQuickToggle();
   initFilter();
   initBulkActionButtons();
+  initReaderView();
   initRefresh();
   initSettingsModal();
 

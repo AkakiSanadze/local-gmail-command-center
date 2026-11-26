@@ -11,6 +11,9 @@ export const MAX_NOTIFICATION_LINKS = 100;
 export const LOCALLY_READ_GRACE_MS = 5 * 60 * 1000;
 export const AI_SUMMARY_TIMEOUT_MS = 45_000;
 export const AI_TEST_TIMEOUT_MS = 5_000;
+export const EMAIL_DETAIL_TIMEOUT_MS = 12_000;
+export const UNSUBSCRIBE_TIMEOUT_MS = 10_000;
+export const MAX_EMAIL_DETAIL_CACHE = 30;
 
 export const DEFAULT_AI_PROVIDER = 'lmstudio';
 export const DEFAULT_AI_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
@@ -34,6 +37,7 @@ export const DEFAULT_SETTINGS = {
   soundEnabled: true,
   focusMode: false,
   vipOnly: false,
+  autoMarkReadOnPreview: false,
   vipKeywords: DEFAULT_VIP_KEYWORDS,
   aiProvider: DEFAULT_AI_PROVIDER,
   aiEndpoint: DEFAULT_AI_ENDPOINT,
@@ -54,6 +58,7 @@ export const EDITABLE_SETTING_KEYS = [
   'pollInterval',
   'focusMode',
   'vipOnly',
+  'autoMarkReadOnPreview',
   'vipKeywords',
   'aiProvider',
   'aiEndpoint',

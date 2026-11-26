@@ -629,3 +629,225 @@ test('Venice AI provider supports Bearer auth, text model listing, missing key e
   assert.equal(errRes.success, false);
   assert.match(errRes.error, /Venice AI API/);
 });
+
+test('REPORT_SPAM sends Simple View RPC with actionCode 7, commits local removal, and updates badge', async () => {
+  const entry0 = {
+    id: 'tag:gmail.google.com,2004:1827491048192847350',
+    messageId: '18f3a4b5c6d7e850',
+    title: 'Promo Deal',
+    summary: 'Buy now!',
+    link: 'https://mail.google.com/mail/u/0/#inbox/18f3a4b5c6d7e850',
+    accountIndex: 0
+  };
+
+  const api = createMockExtensionApi({
+    mode: 'firefox',
+    cookies: [{ name: 'GMAIL_AT', value: 'at-u0', domain: 'mail.google.com', path: '/mail/u/0' }],
+    initialLocal: {
+      accounts: [{ index: 0, name: 'Personal', enabled: true }],
+      cachedFeeds: {
+        0: {
+          unauthorized: false,
+          fullcount: 1,
+          rawCount: 1,
+          accountEmail: 'u0@gmail.com',
+          entries: [entry0]
+        }
+      }
+    }
+  });
+
+  let capturedBatchPayload = null;
+  let postActionCalled = false;
+
+  const ctrl = createBackgroundController(api, {
+    DOMParser: MiniXmlDOMParser,
+    AudioContext: MockAudioContext,
+    fetchImpl: async (url, opts = {}) => {
+      if (url.includes('/u/0/s/') && opts.method !== 'POST') {
+        return makeFetchResponse({ body: `<script>var ID_KEY='ik-u0';</script>` });
+      }
+      if (url.includes('/u/0/s/?v=or') && opts.method === 'POST') {
+        postActionCalled = true;
+        capturedBatchPayload = JSON.parse(opts.body.get('s_jr'));
+        return makeFetchResponse({ body: `[[null,"ok"]]` });
+      }
+      if (url.includes('/u/0/feed/atom')) {
+        return makeFetchResponse({
+          body: makeAtomFeedXml({
+            email: 'u0@gmail.com',
+            fullcount: postActionCalled ? 0 : 1,
+            entries: postActionCalled ? [] : [entry0]
+          })
+        });
+      }
+      return makeFetchResponse({ ok: false, status: 401 });
+    }
+  });
+
+  const res = await ctrl.handleMessage({
+    action: 'REPORT_SPAM',
+    ...entry0
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(res.serverSynced, true);
+  assert.ok(capturedBatchPayload);
+  assert.equal(capturedBatchPayload[1][0][3][1], 7);
+  assert.equal(capturedBatchPayload[1][0][3][2], entry0.messageId);
+  assert.equal(api._state.badge.text, '');
+
+  const stored = await api.storage.local.get('locallyReadIds');
+  assert.ok(stored.locallyReadIds.includes(entry0.id));
+  assert.ok(stored.locallyReadIds.includes(entry0.messageId));
+});
+
+test('FETCH_EMAIL_DETAIL fetches view=pt and view=om in parallel, parses unsubscribe headers, caches, and handles auth expiry', async () => {
+  const api = createMockExtensionApi({
+    mode: 'firefox',
+    cookies: [{ name: 'GMAIL_AT', value: 'at-u0', domain: 'mail.google.com', path: '/mail/u/0' }]
+  });
+
+  let ptFetchCount = 0;
+  let omFetchCount = 0;
+  let expireSession = false;
+
+  const ctrl = createBackgroundController(api, {
+    DOMParser: MiniXmlDOMParser,
+    fetchImpl: async url => {
+      if (url.includes('/u/0/s/')) {
+        return makeFetchResponse({ body: `<script>var ID_KEY='ik-u0';</script>` });
+      }
+      if (url.includes('view=pt')) {
+        ptFetchCount++;
+        if (expireSession) {
+          return makeFetchResponse({
+            ok: false,
+            status: 401,
+            redirected: true,
+            url: 'https://accounts.google.com/ServiceLogin'
+          });
+        }
+        return makeFetchResponse({
+          body: '<table class="message"><tr><td>From: News</td></tr><tr><td colspan="2"><p>Hello Reader</p></td></tr></table>'
+        });
+      }
+      if (url.includes('view=om')) {
+        omFetchCount++;
+        return makeFetchResponse({
+          body: [
+            'From: News <news@example.com>',
+            'List-Unsubscribe: <https://example.com/unsub?id=99>',
+            'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
+            '',
+            'Raw body'
+          ].join('\n')
+        });
+      }
+      return makeFetchResponse({ ok: false, status: 404 });
+    }
+  });
+
+  const first = await ctrl.handleMessage({
+    action: 'FETCH_EMAIL_DETAIL',
+    accountIndex: 0,
+    messageId: '18f3a4b5c6d7e860'
+  });
+  assert.equal(first.success, true);
+  assert.match(first.rawHtml, /Hello Reader/);
+  assert.deepEqual(first.unsubscribe, {
+    type: 'one-click',
+    url: 'https://example.com/unsub?id=99',
+    mailtoUrl: null,
+    source: 'header'
+  });
+  assert.equal(ptFetchCount, 1);
+  assert.equal(omFetchCount, 1);
+
+  // Second request for the same message should hit cache
+  const second = await ctrl.handleMessage({
+    action: 'FETCH_EMAIL_DETAIL',
+    accountIndex: 0,
+    messageId: '18f3a4b5c6d7e860'
+  });
+  assert.equal(second.success, true);
+  assert.equal(second.cached, true);
+  assert.equal(ptFetchCount, 1);
+  assert.equal(omFetchCount, 1);
+
+  // Auth expiry on uncached message returns authRequired
+  expireSession = true;
+  const expiredRes = await ctrl.handleMessage({
+    action: 'FETCH_EMAIL_DETAIL',
+    accountIndex: 0,
+    messageId: '18f3a4b5c6d7e861'
+  });
+  assert.equal(expiredRes.success, false);
+  assert.equal(expiredRes.authRequired, true);
+});
+
+test('UNSUBSCRIBE_EMAIL handles One-Click POST, fallback tab on error, URL tab, and mailto Gmail Compose', async () => {
+  const api = createMockExtensionApi({ mode: 'firefox' });
+  const postCalls = [];
+  let failPost = false;
+
+  const ctrl = createBackgroundController(api, {
+    fetchImpl: async (url, opts = {}) => {
+      if (failPost) throw new Error('Network error');
+      postCalls.push({ url, opts });
+      return makeFetchResponse({ ok: true, status: 200 });
+    }
+  });
+
+  // 1. One-Click POST succeeds silently
+  const resOneClick = await ctrl.handleMessage({
+    action: 'UNSUBSCRIBE_EMAIL',
+    accountIndex: 1,
+    unsubscribe: { type: 'one-click', url: 'https://example.com/oneclick', mailtoUrl: null }
+  });
+  assert.equal(resOneClick.success, true);
+  assert.equal(resOneClick.method, 'one-click');
+  assert.equal(postCalls.length, 1);
+  assert.equal(postCalls[0].opts.method, 'POST');
+  assert.equal(postCalls[0].opts.mode, 'no-cors');
+  assert.equal(postCalls[0].opts.body, 'List-Unsubscribe=One-Click');
+  assert.equal(api._state.tabs.length, 0);
+
+  // 2. One-Click POST network failure falls back to opening tab
+  failPost = true;
+  const resFallback = await ctrl.handleMessage({
+    action: 'UNSUBSCRIBE_EMAIL',
+    accountIndex: 1,
+    unsubscribe: { type: 'one-click', url: 'https://example.com/fallback', mailtoUrl: null }
+  });
+  assert.equal(resFallback.success, true);
+  assert.equal(resFallback.method, 'tab_fallback');
+  assert.equal(api._state.tabs[0].url, 'https://example.com/fallback');
+
+  // 3. Standard URL opens tab
+  const resUrl = await ctrl.handleMessage({
+    action: 'UNSUBSCRIBE_EMAIL',
+    accountIndex: 0,
+    unsubscribe: { type: 'url', url: 'https://example.com/prefs', mailtoUrl: null }
+  });
+  assert.equal(resUrl.success, true);
+  assert.equal(resUrl.method, 'tab');
+  assert.equal(api._state.tabs[1].url, 'https://example.com/prefs');
+
+  // 4. Mailto opens pre-filled Gmail Compose tab for target account
+  const resMailto = await ctrl.handleMessage({
+    action: 'UNSUBSCRIBE_EMAIL',
+    accountIndex: 2,
+    unsubscribe: {
+      type: 'mailto',
+      url: null,
+      mailtoUrl: 'mailto:unsub@list.org?subject=Leave&body=Bye'
+    }
+  });
+  assert.equal(resMailto.success, true);
+  assert.equal(resMailto.method, 'mailto_compose');
+  assert.equal(
+    api._state.tabs[2].url,
+    'https://mail.google.com/mail/u/2/?view=cm&fs=1&to=unsub%40list.org&su=Leave&body=Bye'
+  );
+});

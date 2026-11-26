@@ -22,14 +22,22 @@ import {
   DEFAULT_POLL_INTERVAL,
   DEFAULT_SETTINGS,
   DEFAULT_VENICE_MODEL,
+  EMAIL_DETAIL_TIMEOUT_MS,
   LOCALLY_READ_GRACE_MS,
   MAX_AI_SUMMARIES,
+  MAX_EMAIL_DETAIL_CACHE,
   MAX_LOCALLY_READ_IDS,
   MAX_NOTIFICATION_LINKS,
   MAX_NOTIFIED_IDS,
+  UNSUBSCRIBE_TIMEOUT_MS,
   VENICE_API_ENDPOINT,
   VENICE_MODELS_ENDPOINT
 } from './shared/config.js';
+import {
+  buildGmailComposeFromMailto,
+  isSafeHttpUrl,
+  parseUnsubscribeHeaders
+} from './shared/email-parser.js';
 import { resolveHexMessageId, toHexThreadId } from './shared/gmail-ids.js';
 import { getCandidateLocalEndpoints } from './shared/ui-logic.js';
 import { isVipEmail } from './shared/vip.js';
@@ -51,6 +59,7 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
   // Ephemeral caches (safe to rebuild after SW/Event-Page restart)
   const gmailTokensCache = new Map();
   const gmailSimplePageUrlCache = new Map();
+  const emailDetailCache = new Map();
   let creatingOffscreenPromise = null;
   let inFlightCheckPromise = null;
 
@@ -785,10 +794,16 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
   }
 
   /**
-   * Performs Gmail Simple View (/s/?v=or) batch RPC request for Trash ('tr' = 9) or Mark Read ('rd' = 3).
+   * Performs Gmail Simple View (/s/?v=or) batch RPC request for Mark Read ('rd' = 3),
+   * Report Spam ('sp' = 7), or Trash ('tr' = 9).
    */
   async function sendGmailBatchRpc(accountIndex, validIds, cmd, ik, at) {
-    const actionCode = cmd === 'tr' ? 9 : 3;
+    const ACTION_CODES = {
+      rd: 3, // Mark as read
+      sp: 7, // Report spam
+      tr: 9  // Move to trash
+    };
+    const actionCode = ACTION_CODES[cmd] ?? 3;
     const body = new FormData();
     body.append(
       's_jr',
@@ -1126,6 +1141,142 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
   }
 
   /**
+   * Fetches Gmail Print View (view=pt) body and Original Message (view=om) headers in parallel.
+   */
+  async function fetchEmailDetail(message) {
+    const accountIndex = Number(message.accountIndex) || 0;
+    const hexId = resolveHexMessageId(message);
+    if (!hexId) {
+      return { success: false, error: 'missing_message_id' };
+    }
+
+    const cacheKey = `${accountIndex}:${hexId}`;
+    const cached = emailDetailCache.get(cacheKey);
+    if (cached) {
+      return { success: true, cached: true, ...cached };
+    }
+
+    let ik = null;
+    try {
+      const tokenInfo = await getAccountActionTokens(accountIndex);
+      ik = tokenInfo?.ik || null;
+    } catch (_) {
+      // view=pt and view=om work via session cookies even if ik lookup fails
+    }
+
+    const encodedId = encodeURIComponent(hexId);
+    const ptUrl = ik
+      ? `https://mail.google.com/mail/u/${accountIndex}/?ui=2&ik=${encodeURIComponent(
+          ik
+        )}&view=pt&search=all&th=${encodedId}`
+      : `https://mail.google.com/mail/u/${accountIndex}/?view=pt&th=${encodedId}`;
+    const omUrl = `https://mail.google.com/mail/u/${accountIndex}/?view=om&th=${encodedId}`;
+
+    const fetchOpts = () => ({
+      credentials: 'include',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(EMAIL_DETAIL_TIMEOUT_MS)
+    });
+
+    const [ptSettled, omSettled] = await Promise.allSettled([
+      fetchFn(ptUrl, fetchOpts()),
+      fetchFn(omUrl, fetchOpts())
+    ]);
+
+    if (ptSettled.status !== 'fulfilled') {
+      const err = ptSettled.reason;
+      const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+      return {
+        success: false,
+        error: isTimeout ? 'წერილის ჩატვირთვის დრო ამოიწურა (Timeout)' : err?.message || 'Fetch failed'
+      };
+    }
+
+    const ptRes = ptSettled.value;
+    if (
+      ptRes.status === 401 ||
+      ptRes.status === 403 ||
+      (ptRes.redirected && ptRes.url && ptRes.url.includes('ServiceLogin'))
+    ) {
+      return { success: false, authRequired: true, error: 'Gmail session expired' };
+    }
+
+    const rawHtml = ptRes.ok ? await ptRes.text() : '';
+    if (!rawHtml) {
+      return { success: false, error: 'Could not load message body' };
+    }
+
+    let unsubscribe = null;
+    if (omSettled.status === 'fulfilled' && omSettled.value.ok) {
+      try {
+        const rawOm = await omSettled.value.text();
+        unsubscribe = parseUnsubscribeHeaders(rawOm);
+      } catch (_) {}
+    }
+
+    if (emailDetailCache.size >= MAX_EMAIL_DETAIL_CACHE) {
+      const oldestKey = emailDetailCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        emailDetailCache.delete(oldestKey);
+      }
+    }
+    const detail = { rawHtml, unsubscribe };
+    emailDetailCache.set(cacheKey, detail);
+
+    return { success: true, ...detail };
+  }
+
+  /**
+   * Executes Smart Hybrid Unsubscribe:
+   * - RFC 8058 One-Click POST (silent no-cors, falling back to tab on network error)
+   * - HTTPS/HTTP URL in a new tab
+   * - mailto: converted to Gmail Web Compose tab
+   */
+  async function handleUnsubscribeEmail(message) {
+    const unsubscribe = message?.unsubscribe;
+    const accountIndex = Number(message?.accountIndex) || 0;
+    if (!unsubscribe) {
+      return { success: false, error: 'No unsubscribe target' };
+    }
+
+    if (
+      unsubscribe.type === 'one-click' &&
+      isSafeHttpUrl(unsubscribe.url) &&
+      unsubscribe.url.toLowerCase().startsWith('https://')
+    ) {
+      try {
+        await fetchFn(unsubscribe.url, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'List-Unsubscribe=One-Click',
+          signal: AbortSignal.timeout(UNSUBSCRIBE_TIMEOUT_MS)
+        });
+        return { success: true, method: 'one-click' };
+      } catch (err) {
+        console.warn('One-Click unsubscribe POST failed, falling back to tab:', err);
+        await api.tabs.create({ url: unsubscribe.url });
+        return { success: true, method: 'tab_fallback' };
+      }
+    }
+
+    if (unsubscribe.url && isSafeHttpUrl(unsubscribe.url)) {
+      await api.tabs.create({ url: unsubscribe.url });
+      return { success: true, method: 'tab' };
+    }
+
+    if (unsubscribe.mailtoUrl) {
+      const composeUrl = buildGmailComposeFromMailto(unsubscribe.mailtoUrl, accountIndex);
+      if (composeUrl) {
+        await api.tabs.create({ url: composeUrl });
+        return { success: true, method: 'mailto_compose' };
+      }
+    }
+
+    return { success: false, error: 'Unsupported unsubscribe method' };
+  }
+
+  /**
    * Generates a 1-sentence AI summary via configured provider (LM Studio or Venice AI).
    */
   async function handleGenerateAiSummary(message) {
@@ -1387,6 +1538,30 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
         }
       }
 
+      case 'REPORT_SPAM': {
+        try {
+          return await handleSingleServerAction(message, 'sp');
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      }
+
+      case 'FETCH_EMAIL_DETAIL': {
+        try {
+          return await fetchEmailDetail(message);
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      }
+
+      case 'UNSUBSCRIBE_EMAIL': {
+        try {
+          return await handleUnsubscribeEmail(message);
+        } catch (err) {
+          return { success: false, error: err.message };
+        }
+      }
+
       case 'MARK_ALL_READ': {
         try {
           return await handleBulkServerAction(message, 'rd');
@@ -1471,6 +1646,8 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
     getAccountActionTokens,
     sendGmailBatchRpc,
     executeGmailServerAction,
+    fetchEmailDetail,
+    handleUnsubscribeEmail,
     handleMessage,
     registerListeners
   };
