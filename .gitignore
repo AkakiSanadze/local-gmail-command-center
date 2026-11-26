@@ -1,2 +1,5 @@
+dist/
+*.zip
+*.xpi
 .DS_Store
-*.log
+Thumbs.db

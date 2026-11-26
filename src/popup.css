@@ -1,6 +1,6 @@
 /* ==========================================================================
-   Local Gmail Command Center - Modern Bento Stylesheet (CSS3 / ES2024+)
-   Zero-Dependency, Native Nesting, Flexbox & Grid
+   Local Gmail Command Center - Modern Bento Stylesheet
+   Zero-Dependency, Native CSS Nesting, light-dark(), Flexbox & Grid
    ========================================================================== */
 
 :root {
@@ -53,84 +53,8 @@
   --transition-normal: 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* System Dark Mode */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg-page: #0c1017;
-    --bg-surface: #151b23;
-    --bg-surface-hover: #1f2631;
-    --bg-surface-active: #28303e;
-    --bg-surface-elevated: #1b222c;
-
-    --border-color: #262c36;
-    --border-subtle: #1e242f;
-
-    --text-primary: #f3f4f6;
-    --text-secondary: #9ca3af;
-    --text-muted: #6b7280;
-
-    --accent-red-subtle: rgba(217, 48, 37, 0.16);
-    --accent-red-border: rgba(217, 48, 37, 0.35);
-
-    --accent-green-subtle: rgba(16, 185, 129, 0.16);
-    --accent-amber-subtle: rgba(245, 158, 11, 0.16);
-    --accent-purple-subtle: rgba(139, 92, 246, 0.16);
-    --accent-blue-subtle: rgba(37, 99, 235, 0.16);
-  }
-}
-
-/* Explicit User Dark Mode Override */
-[data-theme="dark"],
-:root[data-theme="dark"] {
-  color-scheme: dark !important;
-  --bg-page: #0c1017 !important;
-  --bg-surface: #151b23 !important;
-  --bg-surface-hover: #1f2631 !important;
-  --bg-surface-active: #28303e !important;
-  --bg-surface-elevated: #1b222c !important;
-
-  --border-color: #262c36 !important;
-  --border-subtle: #1e242f !important;
-
-  --text-primary: #f3f4f6 !important;
-  --text-secondary: #9ca3af !important;
-  --text-muted: #6b7280 !important;
-
-  --accent-red-subtle: rgba(217, 48, 37, 0.16) !important;
-  --accent-red-border: rgba(217, 48, 37, 0.35) !important;
-
-  --accent-green-subtle: rgba(16, 185, 129, 0.16) !important;
-  --accent-amber-subtle: rgba(245, 158, 11, 0.16) !important;
-  --accent-purple-subtle: rgba(139, 92, 246, 0.16) !important;
-  --accent-blue-subtle: rgba(37, 99, 235, 0.16) !important;
-}
-
-/* Explicit User Light Mode Override */
-[data-theme="light"],
-:root[data-theme="light"] {
-  color-scheme: light !important;
-  --bg-page: #f8f9fa !important;
-  --bg-surface: #ffffff !important;
-  --bg-surface-hover: #f3f4f6 !important;
-  --bg-surface-active: #e5e7eb !important;
-  --bg-surface-elevated: #ffffff !important;
-
-  --border-color: #e5e7eb !important;
-  --border-subtle: #f0f2f5 !important;
-
-  --text-primary: #111827 !important;
-  --text-secondary: #4b5563 !important;
-  --text-muted: #9ca3af !important;
-
-  --accent-red-subtle: #fee2e2 !important;
-  --accent-red-border: #fca5a5 !important;
-
-  --accent-green-subtle: #d1fae5 !important;
-  --accent-amber-subtle: #fef3c7 !important;
-  --accent-purple-subtle: #ede9fe !important;
-  --accent-blue-subtle: #dbeafe !important;
-}
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
 
 /* Base Reset & Layout */
 * {
@@ -167,26 +91,15 @@ body[data-view="popup"] {
   max-height: 600px;
 }
 
-/* 100% Fluid Dynamic Width for Side Panel */
+/* 100% Fluid Dynamic Width for Side Panel / Firefox Sidebar */
 body[data-view="sidepanel"],
 body.is-sidepanel {
-  width: 100% !important;
-  max-width: 100% !important;
-  min-width: 100% !important;
-  min-height: 100vh !important;
-  height: 100vh !important;
-  max-height: none !important;
-}
-
-/* Media Query for dynamic responsive expansion */
-@media (min-width: 395px) {
-  body {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 100% !important;
-    height: 100vh !important;
-    max-height: none !important;
-  }
+  width: 100%;
+  max-width: 100%;
+  min-width: 100%;
+  min-height: 100vh;
+  height: 100vh;
+  max-height: none;
 }
 
 /* Utility */
@@ -252,12 +165,6 @@ body.is-sidepanel {
         object-fit: contain;
       }
 
-      .brand-icon {
-        width: 18px;
-        height: 18px;
-        color: var(--accent-red);
-      }
-
       .status-pulse {
         position: absolute;
         top: -2px;
@@ -272,10 +179,6 @@ body.is-sidepanel {
         &.fetching {
           background-color: var(--accent-amber);
           animation: pulse 1s infinite alternate;
-        }
-
-        &.offline {
-          background-color: var(--text-muted);
         }
       }
     }
@@ -348,7 +251,7 @@ body.is-sidepanel {
 }
 
 /* ==========================================================================
-   Navigation Bar: Account Tabs & Compose
+   Navigation Bar: Account Tabs & Quick Actions
    ========================================================================== */
 .nav-bar {
   display: flex;
@@ -398,6 +301,12 @@ body.is-sidepanel {
       border-color: var(--accent-red-border);
       color: var(--accent-red);
       font-weight: 600;
+    }
+
+    &.tab-unauth {
+      border-color: rgba(245, 158, 11, 0.45);
+      background-color: var(--accent-amber-subtle);
+      color: var(--text-primary);
     }
 
     .tab-badge {
@@ -609,6 +518,18 @@ body.is-sidepanel {
       color: #ef4444;
     }
 
+    &.confirming {
+      background-color: #d93025;
+      border-color: #b3261e;
+      color: #ffffff;
+      animation: pulse 0.9s infinite alternate;
+
+      &:hover {
+        background-color: #b3261e;
+        color: #ffffff;
+      }
+    }
+
     &:active {
       transform: scale(0.96);
     }
@@ -627,7 +548,7 @@ body.is-sidepanel {
   gap: 10px;
 }
 
-/* Auth Banner */
+/* Auth / Permission Banner */
 .auth-banner {
   display: flex;
   align-items: center;
@@ -660,13 +581,16 @@ body.is-sidepanel {
   .btn-login {
     display: inline-flex;
     align-items: center;
-    padding: 4px 10px;
+    padding: 5px 10px;
     border-radius: var(--radius-sm);
+    border: none;
     background-color: #d97706;
     color: #ffffff;
+    font-size: 11.5px;
     font-weight: 600;
     text-decoration: none;
     white-space: nowrap;
+    cursor: pointer;
     transition: background-color var(--transition-fast);
 
     &:hover {
@@ -680,6 +604,30 @@ body.is-sidepanel {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Overflow Footer Hint (when fullcount > Atom 20 limit) */
+.overflow-footer-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface);
+  border: 1px dashed var(--border-color);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+
+  &:hover {
+    border-color: var(--accent-red-border);
+    background-color: var(--accent-red-subtle);
+    color: var(--accent-red);
+  }
 }
 
 /* Loading & Empty States */
@@ -770,6 +718,11 @@ body.is-sidepanel {
     border-color: var(--accent-red-border);
     box-shadow: var(--shadow-sm);
     transform: translateY(-1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--accent-red);
+    outline-offset: 1px;
   }
 
   /* Top Meta Line */
@@ -992,56 +945,6 @@ body.is-sidepanel {
         pointer-events: none;
       }
     }
-
-    .btn-mark-read {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: var(--radius-sm);
-      background-color: var(--bg-page);
-      border: 1px solid var(--border-color);
-      color: var(--text-secondary);
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all var(--transition-fast);
-
-      &:hover {
-        background-color: rgba(16, 185, 129, 0.12);
-        border-color: #10b981;
-        color: #10b981;
-      }
-
-      &:active {
-        transform: scale(0.96);
-      }
-    }
-
-    .btn-delete-email {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: var(--radius-sm);
-      background-color: var(--bg-page);
-      border: 1px solid var(--border-color);
-      color: var(--text-secondary);
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all var(--transition-fast);
-
-      &:hover {
-        background-color: rgba(239, 68, 68, 0.12);
-        border-color: #ef4444;
-        color: #ef4444;
-      }
-
-      &:active {
-        transform: scale(0.96);
-      }
-    }
   }
 
   &.fade-out-read {
@@ -1179,6 +1082,29 @@ body.is-sidepanel {
       color: var(--text-muted);
       line-height: 1.35;
     }
+
+    .btn-add-account {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background-color: transparent;
+      border: 1px dashed var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 4px;
+      transition: all var(--transition-fast);
+
+      &:hover {
+        border-color: var(--accent-red);
+        color: var(--accent-red);
+        background-color: var(--accent-red-subtle);
+      }
+    }
   }
 
   /* Account Management Grid in Settings */
@@ -1238,29 +1164,6 @@ body.is-sidepanel {
         &:hover {
           color: var(--accent-red);
         }
-      }
-    }
-
-    .btn-add-account {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 6px 12px;
-      background-color: transparent;
-      border: 1px dashed var(--border-color);
-      border-radius: var(--radius-sm);
-      color: var(--text-secondary);
-      font-size: 11.5px;
-      font-weight: 500;
-      cursor: pointer;
-      margin-top: 4px;
-      transition: all var(--transition-fast);
-
-      &:hover {
-        border-color: var(--accent-red);
-        color: var(--accent-red);
-        background-color: var(--accent-red-subtle);
       }
     }
   }

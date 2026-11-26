@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <title>Local Gmail Command Center - Side Panel</title>
+  <title>Local Gmail Command Center</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-<body data-view="sidepanel">
+<body data-view="popup">
   <!-- Header / Navigation Bar -->
   <header class="app-header">
     <div class="brand" id="brandHeader" role="button" tabindex="0" title="Gmail ინბოქსის გახსნა (Open Inbox)">
@@ -59,7 +59,7 @@
         </svg>
       </button>
 
-      <button type="button" class="icon-btn" id="btnSidePanel" title="Side Panel რეჟიმი" aria-label="Side Panel">
+      <button type="button" class="icon-btn" id="btnSidePanel" title="გახსნა გვერდითა პანელში (Side Panel)" aria-label="Side Panel">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
           <line x1="15" y1="3" x2="15" y2="21"></line>
@@ -106,27 +106,27 @@
         <circle cx="11" cy="11" r="8"></circle>
         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
-      <input type="text" id="filterInput" placeholder="სწრაფი ძებნა (ავტორი, სათაური, OTP კოდი)..." autocomplete="off" spellcheck="false">
-      <button type="button" id="btnClearFilter" class="btn-clear hidden" title="გასუფთავება">✕</button>
+      <input type="text" id="filterInput" placeholder="სწრაფი ძებნა (ავტორი, სათაური, OTP კოდი)..." autocomplete="off" spellcheck="false" aria-label="წერილების სწრაფი ძებნა">
+      <button type="button" id="btnClearFilter" class="btn-clear hidden" title="გასუფთავება" aria-label="ძებნის გასუფთავება">✕</button>
     </div>
-    <button type="button" class="btn-mark-all-read" id="btnMarkAllRead" title="ყველა წერილის წაკითხულად მონიშვნა (Mark All Read)">
+    <button type="button" class="btn-mark-all-read" id="btnMarkAllRead" title="ყველა ნაჩვენები წერილის წაკითხულად მონიშვნა" aria-label="ყველას წაკითხულად მონიშვნა">
       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="20 6 9 17 4 12"></polyline>
       </svg>
       <span>ყველა</span>
     </button>
-    <button type="button" class="btn-delete-all" id="btnDeleteAll" title="ყველა ნაჩვენები წერილის წაშლა (Delete All)">
-      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <button type="button" class="btn-delete-all" id="btnDeleteAll" title="ყველა ნაჩვენები წერილის წაშლა (2-ჯერ დაჭერა)" aria-label="ყველა ნაჩვენები წერილის წაშლა">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polyline points="3 6 5 6 21 6"></polyline>
         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
       </svg>
-      <span>წაშლა</span>
+      <span id="btnDeleteAllLabel">წაშლა</span>
     </button>
   </div>
 
   <!-- Main Emails Container -->
   <main class="content-area">
-    <!-- Auth Warning Banner -->
+    <!-- Auth / Permission Warning Banner -->
     <div class="auth-banner hidden" id="authBanner">
       <div class="auth-banner-content">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -135,11 +135,12 @@
           <line x1="12" y1="16" x2="12.01" y2="16"></line>
         </svg>
         <div class="auth-text">
-          <strong>ავტორიზაცია საჭიროა:</strong>
+          <strong id="authBannerTitle">ავტორიზაცია საჭიროა:</strong>
           <span id="authAccountMsg">გთხოვთ გაიაროთ ავტორიზაცია Gmail-ში</span>
         </div>
       </div>
       <a href="https://mail.google.com" target="_blank" rel="noopener noreferrer" class="btn-login" id="btnLoginGmail">შესვლა</a>
+      <button type="button" class="btn-login hidden" id="btnGrantPermission">ნებართვა</button>
     </div>
 
     <!-- Email Cards Feed -->
@@ -171,17 +172,20 @@
       <!-- Section: Accounts -->
       <section class="settings-section">
         <h3 class="section-title">Gmail ექაუნთები</h3>
-        <p class="section-desc">აირჩიეთ რომელი სესიები (u/0, u/1, u/2) შემოწმდეს და დაარქვით სახელები.</p>
-        
+        <p class="section-desc">აირჩიეთ რომელი სესიები (u/0, u/1, u/2...) შემოწმდეს და დაარქვით სახელები.</p>
+
         <div class="accounts-grid" id="accountsSettingsList">
           <!-- Populated dynamically -->
         </div>
+        <button type="button" class="btn-add-account" id="btnAddAccountRow" aria-label="ახალი ანგარიშის დამატება">
+          <span>➕ ანგარიშის დამატება</span>
+        </button>
       </section>
 
       <!-- Section: Monitoring & Alerts -->
       <section class="settings-section">
         <h3 class="section-title">მონიტორინგი და შეტყობინებები</h3>
-        
+
         <div class="form-row">
           <label for="pollIntervalInput">შემოწმების ინტერვალი:</label>
           <select id="pollIntervalInput" class="custom-select">
@@ -222,9 +226,9 @@
         <div class="form-row audio-test-row">
           <div class="audio-info">
             <span class="audio-title">Web Audio სინთეზატორი</span>
-            <span class="audio-desc">ნეითივ ორ-ტონიანი Chime (D5 -> A5)</span>
+            <span class="audio-desc">ნეითივ ორ-ტონიანი Chime (D5 -&gt; A5)</span>
           </div>
-          <button type="button" class="btn-test-sound" id="btnTestSound">
+          <button type="button" class="btn-test-sound" id="btnTestSound" aria-label="ხმის შემოწმება">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
               <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
@@ -239,7 +243,7 @@
       <section class="settings-section">
         <h3 class="section-title">LM Studio AI შეჯამება</h3>
         <p class="section-desc">ლოკალური AI შეჯამება LM Studio-ს მეშვეობით (Local Server: http://127.0.0.1:1234).</p>
-        
+
         <div class="form-row">
           <label for="aiEndpointInput">LM Studio Endpoint URL:</label>
           <input type="url" id="aiEndpointInput" class="custom-input" placeholder="http://127.0.0.1:1234/v1/chat/completions">
@@ -255,7 +259,7 @@
             <span class="ai-test-title">სერვერის შემოწმება</span>
             <span class="ai-test-desc" id="lmStudioStatusText">კავშირი: შეუმოწმებელი</span>
           </div>
-          <button type="button" class="btn-test-sound" id="btnTestLmStudio">
+          <button type="button" class="btn-test-sound" id="btnTestLmStudio" aria-label="LM Studio სერვერის შემოწმება">
             <span>🔌 შემოწმება</span>
           </button>
         </div>
@@ -263,11 +267,11 @@
 
       <!-- Dialog Footer -->
       <div class="dialog-footer">
-        <button type="submit" class="btn-primary" id="btnSaveSettings">შენახვა და დახურვა</button>
+        <button type="submit" class="btn-primary" id="btnSaveSettings" aria-label="პარამეტრების შენახვა და დახურვა">შენახვა და დახურვა</button>
       </div>
     </form>
   </dialog>
 
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

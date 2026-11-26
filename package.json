@@ -1,0 +1,13 @@
+{
+  "name": "local-gmail-command-center",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency cross-browser (Chrome + Firefox MV3) local Gmail monitor, OTP detector, and LM Studio AI assistant.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "pack": "node scripts/build.mjs --pack",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/build.mjs && node --test tests/*.test.mjs"
+  }
+}
