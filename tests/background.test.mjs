@@ -551,3 +551,81 @@ test('onInstalled & onStartup configure alarm with delayInMinutes === period (no
   const alarmAfterStartup = api._state.alarms.get(ALARM_NAME);
   assert.equal(alarmAfterStartup.delayInMinutes, 5);
 });
+
+test('Venice AI provider supports Bearer auth, text model listing, missing key error, and <think> stripping', async () => {
+  const captured = [];
+  const api = createMockExtensionApi({
+    mode: 'firefox',
+    initialLocal: {
+      aiProvider: 'venice',
+      veniceApiKey: 'vapi_secret_123',
+      veniceModel: 'llama-3.3-70b'
+    }
+  });
+
+  const ctrl = createBackgroundController(api, {
+    fetchImpl: async (url, opts = {}) => {
+      captured.push({ url, headers: opts.headers, body: opts.body });
+      if (url === 'https://api.venice.ai/api/v1/models') {
+        return makeFetchResponse({
+          body: {
+            data: [
+              { id: 'llama-3.3-70b', type: 'text' },
+              { id: 'fluently-xl', type: 'image' },
+              { id: 'deepseek-r1-671b', type: 'text' }
+            ]
+          }
+        });
+      }
+      if (url === 'https://api.venice.ai/api/v1/chat/completions') {
+        return makeFetchResponse({
+          body: {
+            choices: [
+              {
+                message: {
+                  content: '<think>analyzing</think>თქვენი შეკვეთა გაგზავნილია.'
+                }
+              }
+            ]
+          }
+        });
+      }
+      return makeFetchResponse({ ok: false, status: 404 });
+    }
+  });
+
+  // 1. Test Venice model listing filters out image models
+  const testRes = await ctrl.handleMessage({
+    action: 'TEST_AI_CONNECTION',
+    provider: 'venice',
+    apiKey: 'vapi_secret_123'
+  });
+  assert.equal(testRes.success, true);
+  assert.deepEqual(testRes.models, ['llama-3.3-70b', 'deepseek-r1-671b']);
+  assert.equal(captured[0].headers.Authorization, 'Bearer vapi_secret_123');
+
+  // 2. Test Venice summary generation
+  const sumRes = await ctrl.handleMessage({
+    action: 'GENERATE_AI_SUMMARY',
+    entryId: 'venice-1',
+    emailText: 'Subject: Order\nBody: Shipped'
+  });
+  assert.equal(sumRes.success, true);
+  assert.equal(sumRes.summary, 'თქვენი შეკვეთა გაგზავნილია.');
+  assert.equal(captured[1].headers.Authorization, 'Bearer vapi_secret_123');
+  assert.equal(JSON.parse(captured[1].body).model, 'llama-3.3-70b');
+
+  // 3. Test missing API key fails cleanly
+  const noKeyApi = createMockExtensionApi({
+    mode: 'firefox',
+    initialLocal: { aiProvider: 'venice', veniceApiKey: '' }
+  });
+  const noKeyCtrl = createBackgroundController(noKeyApi, { fetchImpl: async () => makeFetchResponse({}) });
+  const errRes = await noKeyCtrl.handleMessage({
+    action: 'GENERATE_AI_SUMMARY',
+    entryId: 'venice-2',
+    emailText: 'Hello'
+  });
+  assert.equal(errRes.success, false);
+  assert.match(errRes.error, /Venice AI API/);
+});

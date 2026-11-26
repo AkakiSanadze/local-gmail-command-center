@@ -239,27 +239,55 @@
         </div>
       </section>
 
-      <!-- Section: Local AI Bridge -->
+      <!-- Section: AI Summary Provider (LM Studio / Venice AI) -->
       <section class="settings-section">
-        <h3 class="section-title">LM Studio AI შეჯამება</h3>
-        <p class="section-desc">ლოკალური AI შეჯამება LM Studio-ს მეშვეობით (Local Server: http://127.0.0.1:1234).</p>
+        <h3 class="section-title">AI შეჯამება (LM Studio / Venice AI)</h3>
+        <p class="section-desc">აირჩიეთ ლოკალური LM Studio ან Venice AI API წერილების 1-წინადადებიანი შეჯამებისთვის.</p>
 
         <div class="form-row">
-          <label for="aiEndpointInput">LM Studio Endpoint URL:</label>
-          <input type="url" id="aiEndpointInput" class="custom-input" placeholder="http://127.0.0.1:1234/v1/chat/completions">
+          <label for="aiProviderSelect">AI პროვაიდერი:</label>
+          <select id="aiProviderSelect" class="custom-select">
+            <option value="lmstudio">LM Studio (ლოკალური სერვერი)</option>
+            <option value="venice">Venice AI (API)</option>
+          </select>
         </div>
 
-        <div class="form-row">
-          <label for="aiModelInput">მოდელის სახელი (Model ID):</label>
-          <input type="text" id="aiModelInput" class="custom-input" placeholder="local-model">
+        <div id="lmStudioFields" class="provider-fields">
+          <div class="form-row">
+            <label for="aiEndpointInput">LM Studio Endpoint URL:</label>
+            <input type="url" id="aiEndpointInput" class="custom-input" placeholder="http://127.0.0.1:1234/v1/chat/completions">
+          </div>
+
+          <div class="form-row">
+            <label for="aiModelInput">მოდელის სახელი (Model ID):</label>
+            <input type="text" id="aiModelInput" class="custom-input" placeholder="local-model">
+          </div>
+        </div>
+
+        <div id="veniceFields" class="provider-fields hidden">
+          <div class="form-row">
+            <label for="veniceApiKeyInput">Venice AI API Key:</label>
+            <input type="password" id="veniceApiKeyInput" class="custom-input" placeholder="vapi_..." autocomplete="off">
+          </div>
+
+          <div class="form-row">
+            <label for="veniceModelInput">Venice AI მოდელი:</label>
+            <input type="text" id="veniceModelInput" class="custom-input" list="veniceModelsList" placeholder="llama-3.3-70b" autocomplete="off">
+            <datalist id="veniceModelsList">
+              <option value="llama-3.3-70b"></option>
+              <option value="qwen-2.5-qwq-32b"></option>
+              <option value="deepseek-r1-671b"></option>
+              <option value="mistral-31-24b"></option>
+            </datalist>
+          </div>
         </div>
 
         <div class="form-row ai-test-row">
           <div class="ai-test-info">
-            <span class="ai-test-title">სერვერის შემოწმება</span>
+            <span class="ai-test-title">კავშირის და მოდელების შემოწმება</span>
             <span class="ai-test-desc" id="lmStudioStatusText">კავშირი: შეუმოწმებელი</span>
           </div>
-          <button type="button" class="btn-test-sound" id="btnTestLmStudio" aria-label="LM Studio სერვერის შემოწმება">
+          <button type="button" class="btn-test-sound" id="btnTestLmStudio" aria-label="AI სერვერის შემოწმება">
             <span>🔌 შემოწმება</span>
           </button>
         </div>

@@ -12,8 +12,12 @@ export const LOCALLY_READ_GRACE_MS = 5 * 60 * 1000;
 export const AI_SUMMARY_TIMEOUT_MS = 45_000;
 export const AI_TEST_TIMEOUT_MS = 5_000;
 
+export const DEFAULT_AI_PROVIDER = 'lmstudio';
 export const DEFAULT_AI_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
 export const DEFAULT_AI_MODEL = 'local-model';
+export const VENICE_API_ENDPOINT = 'https://api.venice.ai/api/v1/chat/completions';
+export const VENICE_MODELS_ENDPOINT = 'https://api.venice.ai/api/v1/models';
+export const DEFAULT_VENICE_MODEL = 'llama-3.3-70b';
 export const DEFAULT_VIP_KEYWORDS =
   'urgent, invoice, სასწრაფო, კოდი, verification, გადახდა, security, auth';
 
@@ -31,8 +35,11 @@ export const DEFAULT_SETTINGS = {
   focusMode: false,
   vipOnly: false,
   vipKeywords: DEFAULT_VIP_KEYWORDS,
+  aiProvider: DEFAULT_AI_PROVIDER,
   aiEndpoint: DEFAULT_AI_ENDPOINT,
   aiModel: DEFAULT_AI_MODEL,
+  veniceApiKey: '',
+  veniceModel: DEFAULT_VENICE_MODEL,
   theme: 'system',
   aiSummaries: {},
   notifiedIds: [],
@@ -48,6 +55,9 @@ export const EDITABLE_SETTING_KEYS = [
   'focusMode',
   'vipOnly',
   'vipKeywords',
+  'aiProvider',
   'aiEndpoint',
-  'aiModel'
+  'aiModel',
+  'veniceApiKey',
+  'veniceModel'
 ];

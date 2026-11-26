@@ -61,6 +61,7 @@ test('Build outputs valid Chrome & Firefox MV3 artifacts, manifests, CSS, HTML, 
   assert.equal(chromeManifest.side_panel.default_path, 'sidepanel.html');
   assert.ok(chromeManifest.permissions.includes('offscreen'));
   assert.ok(chromeManifest.permissions.includes('sidePanel'));
+  assert.ok(chromeManifest.host_permissions.includes('https://api.venice.ai/*'));
   assert.equal(fs.existsSync(path.join(chromeDir, 'offscreen.html')), true);
   assert.equal(fs.existsSync(path.join(chromeDir, 'offscreen.js')), true);
 
@@ -74,6 +75,7 @@ test('Build outputs valid Chrome & Firefox MV3 artifacts, manifests, CSS, HTML, 
   assert.equal(firefoxManifest.background.type, 'module');
   assert.equal(firefoxManifest.sidebar_action.default_panel, 'sidepanel.html');
   assert.ok(firefoxManifest.browser_specific_settings?.gecko?.id);
+  assert.ok(firefoxManifest.host_permissions.includes('https://api.venice.ai/*'));
   assert.equal(firefoxManifest.permissions.includes('offscreen'), false);
   assert.equal(firefoxManifest.permissions.includes('sidePanel'), false);
   assert.equal(firefoxManifest.side_panel, undefined);

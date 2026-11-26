@@ -13,7 +13,9 @@ import {
 import {
   DEFAULT_AI_ENDPOINT,
   DEFAULT_AI_MODEL,
-  DEFAULT_SETTINGS
+  DEFAULT_AI_PROVIDER,
+  DEFAULT_SETTINGS,
+  DEFAULT_VENICE_MODEL
 } from './shared/config.js';
 import {
   aggregateEmails,
@@ -32,6 +34,7 @@ const api = getExtensionApi();
 // State
 let appSettings = null;
 let currentTab = 'all';
+let visibleAccountIndices = [0];
 let cachedFeedData = {};
 let allEmails = [];
 let searchQuery = '';
@@ -77,8 +80,14 @@ const focusModeToggleEl = document.getElementById('focusModeToggle');
 const vipOnlyToggleEl = document.getElementById('vipOnlyToggle');
 const vipKeywordsInputEl = document.getElementById('vipKeywordsInput');
 const btnTestSoundEl = document.getElementById('btnTestSound');
+const aiProviderSelectEl = document.getElementById('aiProviderSelect');
+const lmStudioFieldsEl = document.getElementById('lmStudioFields');
+const veniceFieldsEl = document.getElementById('veniceFields');
 const aiEndpointInputEl = document.getElementById('aiEndpointInput');
 const aiModelInputEl = document.getElementById('aiModelInput');
+const veniceApiKeyInputEl = document.getElementById('veniceApiKeyInput');
+const veniceModelInputEl = document.getElementById('veniceModelInput');
+const veniceModelsListEl = document.getElementById('veniceModelsList');
 const lmStudioStatusTextEl = document.getElementById('lmStudioStatusText');
 const btnTestLmStudioEl = document.getElementById('btnTestLmStudio');
 
@@ -320,14 +329,16 @@ function renderAccountTabs() {
     accounts,
     appSettings.locallyReadIds || []
   );
+  visibleAccountIndices = counts.indicesToShow;
 
   // 'All' Tab
   const allCount = counts.allFullcount;
   const allTabBtn = document.createElement('button');
   allTabBtn.type = 'button';
   allTabBtn.className = `tab-pill ${currentTab === 'all' ? 'active' : ''}`;
+  allTabBtn.title = 'ყველა ექაუნთი (კლავიში 0 • ორმაგი კლიკით ინბოქსი)';
   allTabBtn.innerHTML = `
-    <span>ყველა</span>
+    <span class="tab-label">ყველა</span>
     <span class="tab-badge ${allCount > 0 ? 'has-unread' : ''}">${allCount}</span>
   `;
   allTabBtn.addEventListener('click', () => {
@@ -340,7 +351,7 @@ function renderAccountTabs() {
   accountTabsEl.appendChild(allTabBtn);
 
   // Individual Account Tabs
-  for (const idx of counts.indicesToShow) {
+  counts.indicesToShow.forEach((idx, pos) => {
     const accConfig = accounts.find(a => a.index === idx);
     const feed = cachedFeedData[idx];
     const stat = counts.perAccount.get(idx) || { fullcount: 0, unauthorized: false };
@@ -348,6 +359,7 @@ function renderAccountTabs() {
     const count = stat.fullcount;
     const emailStr = accConfig?.email || feed?.accountEmail || '';
     const displayName = accConfig?.name || (emailStr ? emailStr.split('@')[0] : `u/${idx}`);
+    const hotkeyHint = pos < 9 ? ` • კლავიში ${pos + 1}` : '';
 
     const tabBtn = document.createElement('button');
     tabBtn.type = 'button';
@@ -355,10 +367,10 @@ function renderAccountTabs() {
       isUnauthorized ? 'tab-unauth' : ''
     }`;
     tabBtn.title = isUnauthorized
-      ? `${emailStr || displayName} (საჭიროა Gmail-ის გახსნა)`
-      : `${emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`} (ორმაგი კლიკით ინბოქსში გადასვლა)`;
+      ? `${emailStr || displayName} (საჭიროა Gmail-ის გახსნა${hotkeyHint})`
+      : `${emailStr ? `${emailStr} (u/${idx})` : `Account ${idx}`} (ორმაგი კლიკით ინბოქსი${hotkeyHint})`;
     tabBtn.innerHTML = `
-      <span>u/${idx} ${escapeHtml(displayName)}</span>
+      <span class="tab-label">u/${idx} ${escapeHtml(displayName)}</span>
       <span class="tab-badge ${isUnauthorized ? 'is-warning' : count > 0 ? 'has-unread' : ''}">${
         isUnauthorized ? '🔑' : count
       }</span>
@@ -371,7 +383,7 @@ function renderAccountTabs() {
     });
     tabBtn.addEventListener('dblclick', () => openGmailInbox(idx));
     accountTabsEl.appendChild(tabBtn);
-  }
+  });
 
   // Dynamic tooltips on Quick Action buttons
   const resolvedIdx = resolveActiveAccountIndex(currentTab, accounts);
@@ -662,7 +674,7 @@ function createEmailCard(entry, isVip) {
     const summaryBox = document.createElement('div');
     summaryBox.className = 'ai-summary-box';
     summaryBox.innerHTML = `
-      <div class="ai-summary-header">✨ LM Studio შეჯამება</div>
+      <div class="ai-summary-header">✨ AI შეჯამება</div>
       <div class="ai-summary-text">${escapeHtml(existingSummary)}</div>
     `;
     card.appendChild(summaryBox);
@@ -704,7 +716,10 @@ function createEmailCard(entry, isVip) {
       aiBtn.type = 'button';
       aiBtn.className = 'btn-ai-summary';
       aiBtn.innerHTML = '<span>✨ AI Summary</span>';
-      aiBtn.title = 'შეაჯამე წერილი LM Studio-ს მეშვეობით';
+      aiBtn.title =
+        appSettings?.aiProvider === 'venice'
+          ? 'შეაჯამე წერილი Venice AI-ს მეშვეობით'
+          : 'შეაჯამე წერილი LM Studio-ს მეშვეობით';
 
       aiBtn.addEventListener('click', async e => {
         e.stopPropagation();
@@ -892,11 +907,14 @@ function initBulkActionButtons() {
 }
 
 /**
- * AI Summary Generation via LM Studio
+ * AI Summary Generation (LM Studio or Venice AI)
  */
 async function generateEmailSummary(entry, cardEl, aiBtn) {
   aiBtn.classList.add('loading');
   aiBtn.textContent = '🧠 მუშავდება...';
+
+  const isVenice = appSettings?.aiProvider === 'venice';
+  const providerLabel = isVenice ? 'Venice AI' : 'LM Studio';
 
   let summaryContainer = cardEl.querySelector('.ai-summary-box');
   if (!summaryContainer) {
@@ -906,8 +924,8 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
   }
 
   summaryContainer.innerHTML = `
-    <div class="ai-summary-header">✨ LM Studio შეჯამება</div>
-    <div class="ai-summary-text loading-pulse">🧠 LM Studio ამუშავებს შეჯამებას... (გთხოვთ დაელოდოთ)</div>
+    <div class="ai-summary-header">✨ ${providerLabel} შეჯამება</div>
+    <div class="ai-summary-text loading-pulse">🧠 ${providerLabel} ამუშავებს შეჯამებას... (გთხოვთ დაელოდოთ)</div>
   `;
   const textEl = summaryContainer.querySelector('.ai-summary-text');
 
@@ -933,10 +951,14 @@ async function generateEmailSummary(entry, cardEl, aiBtn) {
       throw new Error(res?.error || 'უცნობი შეცდომა');
     }
   } catch (err) {
-    console.error('LM Studio summary error:', err);
+    console.error(`${providerLabel} summary error:`, err);
     textEl.classList.remove('loading-pulse');
-    const endpoint = appSettings?.aiEndpoint || DEFAULT_AI_ENDPOINT;
-    textEl.textContent = `LM Studio შეჯამება ვერ მოხერხდა: ${err.message}. დარწმუნდით, რომ LM Studio-ში Local Server ჩართულია (${endpoint}).`;
+    if (isVenice) {
+      textEl.textContent = `Venice AI შეჯამება ვერ მოხერხდა: ${err.message}. შეამოწმეთ API გასაღები და მოდელი პარამეტრებში.`;
+    } else {
+      const endpoint = appSettings?.aiEndpoint || DEFAULT_AI_ENDPOINT;
+      textEl.textContent = `LM Studio შეჯამება ვერ მოხერხდა: ${err.message}. დარწმუნდით, რომ LM Studio-ში Local Server ჩართულია (${endpoint}).`;
+    }
     aiBtn.classList.remove('loading');
     aiBtn.textContent = '✨ ხელახლა';
   }
@@ -987,8 +1009,11 @@ function initSettingsModal() {
       focusMode: focusModeToggleEl.checked,
       vipOnly: vipOnlyToggleEl.checked,
       vipKeywords: vipKeywordsInputEl.value.trim(),
+      aiProvider: aiProviderSelectEl?.value || DEFAULT_AI_PROVIDER,
       aiEndpoint: aiEndpointInputEl.value.trim() || DEFAULT_AI_ENDPOINT,
-      aiModel: aiModelInputEl.value.trim() || DEFAULT_AI_MODEL
+      aiModel: aiModelInputEl.value.trim() || DEFAULT_AI_MODEL,
+      veniceApiKey: veniceApiKeyInputEl?.value?.trim() || '',
+      veniceModel: veniceModelInputEl?.value?.trim() || DEFAULT_VENICE_MODEL
     };
 
     appSettings = { ...appSettings, ...editableUpdate };
@@ -1039,26 +1064,49 @@ function initSettingsModal() {
     }
   });
 
+  if (aiProviderSelectEl) {
+    aiProviderSelectEl.addEventListener('change', () => {
+      syncAiProviderFieldsUI(aiProviderSelectEl.value);
+      if (lmStudioStatusTextEl) {
+        lmStudioStatusTextEl.textContent = 'კავშირი: შეუმოწმებელი';
+        lmStudioStatusTextEl.style.color = 'var(--text-muted)';
+      }
+    });
+  }
+
   if (btnTestLmStudioEl) {
     btnTestLmStudioEl.addEventListener('click', async () => {
       btnTestLmStudioEl.disabled = true;
+      const provider = aiProviderSelectEl?.value || DEFAULT_AI_PROVIDER;
+      const providerLabel = provider === 'venice' ? 'Venice AI' : 'LM Studio';
+
       if (lmStudioStatusTextEl) {
         lmStudioStatusTextEl.textContent = 'მოწმდება კავშირი...';
         lmStudioStatusTextEl.style.color = 'var(--text-muted)';
       }
       try {
-        const endpoint = aiEndpointInputEl?.value?.trim() || DEFAULT_AI_ENDPOINT;
         const res = await api.runtime.sendMessage({
-          action: 'TEST_LM_STUDIO_CONNECTION',
-          endpoint
+          action: 'TEST_AI_CONNECTION',
+          provider,
+          endpoint: aiEndpointInputEl?.value?.trim() || DEFAULT_AI_ENDPOINT,
+          apiKey: veniceApiKeyInputEl?.value?.trim() || ''
         });
         if (res && res.success) {
-          const modelList = res.models?.length ? res.models.join(', ') : 'მოდელი ჩატვირთულია';
+          const models = Array.isArray(res.models) ? res.models : [];
+          if (provider === 'venice' && veniceModelsListEl && models.length > 0) {
+            veniceModelsListEl.innerHTML = models
+              .map(m => `<option value="${escapeHtml(m)}"></option>`)
+              .join('');
+          }
+          const preview =
+            models.length > 3
+              ? `${models.slice(0, 3).join(', ')} (+${models.length - 3})`
+              : models.join(', ') || 'მოდელი ჩატვირთულია';
           if (lmStudioStatusTextEl) {
-            lmStudioStatusTextEl.textContent = `✅ დაკავშირებულია! (${modelList})`;
+            lmStudioStatusTextEl.textContent = `✅ დაკავშირებულია! (${preview})`;
             lmStudioStatusTextEl.style.color = 'var(--accent-green, #10b981)';
           }
-          showToast('✅ LM Studio-სთან კავშირი დამყარდა!');
+          showToast(`✅ ${providerLabel}-სთან კავშირი დამყარდა!`);
         } else {
           throw new Error(res?.error || 'კავშირი ვერ დამყარდა');
         }
@@ -1067,7 +1115,7 @@ function initSettingsModal() {
           lmStudioStatusTextEl.textContent = `❌ შეცდომა: ${err.message}`;
           lmStudioStatusTextEl.style.color = 'var(--accent-red, #d93025)';
         }
-        showToast('❌ LM Studio მიუწვდომელია');
+        showToast(`❌ ${providerLabel} მიუწვდომელია`);
       } finally {
         setTimeout(() => {
           btnTestLmStudioEl.disabled = false;
@@ -1118,6 +1166,12 @@ function createAccountSettingRow(acc) {
   return row;
 }
 
+function syncAiProviderFieldsUI(provider) {
+  const isVenice = provider === 'venice';
+  lmStudioFieldsEl?.classList.toggle('hidden', isVenice);
+  veniceFieldsEl?.classList.toggle('hidden', !isVenice);
+}
+
 function populateSettingsForm() {
   if (!appSettings) return;
 
@@ -1154,8 +1208,13 @@ function populateSettingsForm() {
   focusModeToggleEl.checked = Boolean(appSettings.focusMode);
   vipOnlyToggleEl.checked = Boolean(appSettings.vipOnly);
   vipKeywordsInputEl.value = appSettings.vipKeywords || '';
+  const activeProvider = appSettings.aiProvider || DEFAULT_AI_PROVIDER;
+  if (aiProviderSelectEl) aiProviderSelectEl.value = activeProvider;
+  syncAiProviderFieldsUI(activeProvider);
   aiEndpointInputEl.value = appSettings.aiEndpoint || DEFAULT_AI_ENDPOINT;
   aiModelInputEl.value = appSettings.aiModel || DEFAULT_AI_MODEL;
+  if (veniceApiKeyInputEl) veniceApiKeyInputEl.value = appSettings.veniceApiKey || '';
+  if (veniceModelInputEl) veniceModelInputEl.value = appSettings.veniceModel || DEFAULT_VENICE_MODEL;
   if (lmStudioStatusTextEl) {
     lmStudioStatusTextEl.textContent = 'კავშირი: შეუმოწმებელი';
     lmStudioStatusTextEl.style.color = 'var(--text-muted)';
@@ -1301,6 +1360,29 @@ function initKeyboardShortcuts() {
       e.preventDefault();
       filterInputEl?.focus();
       filterInputEl?.select();
+      return;
+    }
+
+    // Number keys 0 (All) and 1-9 (Account tabs) for instant switching without scrolling
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === '0') {
+        e.preventDefault();
+        currentTab = 'all';
+        clearDeleteAllConfirmation();
+        renderAccountTabs();
+        renderEmailList();
+        return;
+      }
+      if (/^[1-9]$/.test(e.key)) {
+        const idx = visibleAccountIndices[Number(e.key) - 1];
+        if (idx !== undefined) {
+          e.preventDefault();
+          currentTab = String(idx);
+          clearDeleteAllConfirmation();
+          renderAccountTabs();
+          renderEmailList();
+        }
+      }
     }
   });
 }

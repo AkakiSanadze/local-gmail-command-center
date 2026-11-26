@@ -18,13 +18,17 @@ import {
   ALARM_NAME,
   DEFAULT_AI_ENDPOINT,
   DEFAULT_AI_MODEL,
+  DEFAULT_AI_PROVIDER,
   DEFAULT_POLL_INTERVAL,
   DEFAULT_SETTINGS,
+  DEFAULT_VENICE_MODEL,
   LOCALLY_READ_GRACE_MS,
   MAX_AI_SUMMARIES,
   MAX_LOCALLY_READ_IDS,
   MAX_NOTIFICATION_LINKS,
-  MAX_NOTIFIED_IDS
+  MAX_NOTIFIED_IDS,
+  VENICE_API_ENDPOINT,
+  VENICE_MODELS_ENDPOINT
 } from './shared/config.js';
 import { resolveHexMessageId, toHexThreadId } from './shared/gmail-ids.js';
 import { getCandidateLocalEndpoints } from './shared/ui-logic.js';
@@ -1122,7 +1126,7 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
   }
 
   /**
-   * Generates a 1-sentence local AI summary via LM Studio with timeout & localhost fallback.
+   * Generates a 1-sentence AI summary via configured provider (LM Studio or Venice AI).
    */
   async function handleGenerateAiSummary(message) {
     const settings = await getSettings();
@@ -1137,9 +1141,26 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
     const systemPrompt =
       'You are a concise email assistant. Summarize the key point of this email in 1 clear, helpful sentence. If in Georgian, reply in Georgian; otherwise in English.';
 
-    const endpoint = (settings.aiEndpoint || DEFAULT_AI_ENDPOINT).trim();
-    const model = (settings.aiModel || DEFAULT_AI_MODEL).trim();
-    const endpointsToTry = getCandidateLocalEndpoints(endpoint);
+    const provider = settings.aiProvider || DEFAULT_AI_PROVIDER;
+    const isVenice = provider === 'venice';
+
+    let endpointsToTry;
+    let model;
+    const headers = { 'Content-Type': 'application/json' };
+
+    if (isVenice) {
+      const apiKey = (settings.veniceApiKey || '').trim();
+      if (!apiKey) {
+        throw new Error('Venice AI API გასაღები არ არის შეყვანილი (გახსენით Settings)');
+      }
+      headers.Authorization = `Bearer ${apiKey}`;
+      endpointsToTry = [VENICE_API_ENDPOINT];
+      model = (settings.veniceModel || DEFAULT_VENICE_MODEL).trim();
+    } else {
+      const endpoint = (settings.aiEndpoint || DEFAULT_AI_ENDPOINT).trim();
+      endpointsToTry = getCandidateLocalEndpoints(endpoint);
+      model = (settings.aiModel || DEFAULT_AI_MODEL).trim();
+    }
 
     let lastErr = null;
     let responseData = null;
@@ -1148,7 +1169,7 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
       try {
         const res = await fetchFn(ep, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           signal: AbortSignal.timeout(AI_SUMMARY_TIMEOUT_MS),
           body: JSON.stringify({
             model,
@@ -1157,7 +1178,8 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
               { role: 'user', content: emailText }
             ],
             temperature: 0.2,
-            max_tokens: 2048
+            max_tokens: 2048,
+            stream: false
           })
         });
 
@@ -1204,14 +1226,42 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
       await api.storage.local.set({ aiSummaries });
     }
 
-    return { success: true, summary };
+    return { success: true, summary, provider };
   }
 
   /**
-   * Tests connectivity to LM Studio /models endpoint with localhost fallback and 5s timeout.
+   * Tests connectivity and fetches available models for LM Studio or Venice AI.
    */
-  async function handleTestLmStudioConnection(message) {
+  async function handleTestAiConnection(message) {
     const settings = await getSettings();
+    const provider = message.provider || settings.aiProvider || DEFAULT_AI_PROVIDER;
+
+    if (provider === 'venice') {
+      const apiKey = (message.apiKey ?? settings.veniceApiKey ?? '').trim();
+      if (!apiKey) {
+        throw new Error('გთხოვთ შეიყვანოთ Venice AI API გასაღები');
+      }
+      try {
+        const res = await fetchFn(VENICE_MODELS_ENDPOINT, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(AI_TEST_TIMEOUT_MS)
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText || 'Auth/API Error'}`);
+        }
+        const data = await res.json();
+        const models = (data.data || [])
+          .filter(m => !m.type || m.type === 'text')
+          .map(m => m.id)
+          .filter(Boolean);
+        return { success: true, models, provider: 'venice' };
+      } catch (err) {
+        throw err?.name === 'TimeoutError' || err?.name === 'AbortError'
+          ? new Error('Venice AI სერვერმა დროულად არ უპასუხა (Timeout)')
+          : err;
+      }
+    }
+
     const rawEndpoint = (message.endpoint || settings.aiEndpoint || DEFAULT_AI_ENDPOINT).trim();
     const candidates = getCandidateLocalEndpoints(rawEndpoint);
 
@@ -1230,7 +1280,7 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
         }
         const data = await res.json();
         const models = (data.data || []).map(m => m.id);
-        return { success: true, models };
+        return { success: true, models, provider: 'lmstudio' };
       } catch (err) {
         lastErr =
           err?.name === 'TimeoutError' || err?.name === 'AbortError'
@@ -1300,11 +1350,12 @@ export function createBackgroundController(api = getExtensionApi(), deps = {}) {
         }
       }
 
+      case 'TEST_AI_CONNECTION':
       case 'TEST_LM_STUDIO_CONNECTION': {
         try {
-          return await handleTestLmStudioConnection(message);
+          return await handleTestAiConnection(message);
         } catch (err) {
-          console.error('LM Studio connection test failed:', err);
+          console.error('AI connection test failed:', err);
           return { success: false, error: err.message };
         }
       }
